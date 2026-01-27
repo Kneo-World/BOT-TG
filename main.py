@@ -1,6 +1,6 @@
 """
-StarEarnBot - бот для заработка виртуальных звезд
-Версия 2.0 с системой вывода
+StarsForQuestion - бот для заработка виртуальных звезд
+Версия 3.0 с исправлениями и админ-панелью
 """
 
 import asyncio
@@ -11,7 +11,7 @@ import sqlite3
 import random
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
-from contextlib import contextmanager
+import hashlib
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
@@ -51,9 +51,23 @@ REF_REWARD = 5  # Награда за реферала
 GROUP_REWARD = 2  # Награда за добавление в группу
 WITHDRAWAL_OPTIONS = [15, 25, 50, 100]  # Опции вывода
 
+# Фейковый топ игроков (фиксированные значения)
+FAKE_TOP_USERS = [
+    {"name": "Алексей_Петров", "stars": 2450},
+    {"name": "Мария_Сидорова", "stars": 2180},
+    {"name": "Иван_Иванов", "stars": 1950},
+    {"name": "Екатерина_Смирнова", "stars": 1820},
+    {"name": "Дмитрий_Кузнецов", "stars": 1750},
+    {"name": "Анна_Васильева", "stars": 1680},
+    {"name": "Сергей_Попов", "stars": 1620},
+    {"name": "Ольга_Новикова", "stars": 1550},
+    {"name": "Александр_Волков", "stars": 1480},
+    {"name": "Наталья_Морозова", "stars": 1420}
+]
+
 # ========== БАЗА ДАННЫХ ==========
 class Database:
-    """Упрощенная база данных SQLite"""
+    """Упрощенная база данных SQLite с исправлениями"""
     
     def __init__(self, path="bot_data.db"):
         self.path = path
@@ -76,7 +90,8 @@ class Database:
                     last_daily TIMESTAMP,
                     last_luck TIMESTAMP,
                     is_subscribed BOOLEAN DEFAULT 0,
-                    ref_code TEXT UNIQUE
+                    ref_code TEXT UNIQUE,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
@@ -115,21 +130,25 @@ class Database:
             
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS bot_stats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    total_withdrawn INTEGER DEFAULT 0,
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    total_withdrawn INTEGER DEFAULT 1900,
                     total_users INTEGER DEFAULT 0,
                     total_stars INTEGER DEFAULT 0,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
             
-            # Создаем начальную статистику
+            # Создаем начальную статистику если не существует
             conn.execute("INSERT OR IGNORE INTO bot_stats (id, total_withdrawn) VALUES (1, 1900)")
             conn.commit()
     
+    def get_connection(self):
+        """Получить соединение с БД"""
+        return sqlite3.connect(self.path)
+    
     def get_user(self, user_id: int) -> Optional[tuple]:
         """Получить пользователя"""
-        with sqlite3.connect(self.path) as conn:
+        with self.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT * FROM users WHERE user_id = ?", 
                 (user_id,)
@@ -139,38 +158,56 @@ class Database:
     def create_user(self, user_id: int, username: str, first_name: str, last_name: str) -> bool:
         """Создать нового пользователя"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 # Генерируем реферальный код
-                ref_code = f"ref{user_id % 10000:04d}"
+                ref_code = f"ref{user_id}"
                 
                 conn.execute(
                     """INSERT OR IGNORE INTO users 
-                    (user_id, username, first_name, last_name, ref_code) 
-                    VALUES (?, ?, ?, ?, ?)""",
-                    (user_id, username, first_name, last_name, ref_code)
+                    (user_id, username, first_name, last_name, ref_code, created_at, updated_at) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, username, first_name, last_name, ref_code, 
+                     datetime.now().isoformat(), datetime.now().isoformat())
                 )
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка создания пользователя: {e}")
             return False
     
-    def add_stars(self, user_id: int, amount: int) -> bool:
-        """Добавить звезды"""
+    def add_stars(self, user_id: int, amount: int, transaction_type: str = "bonus", description: str = "") -> bool:
+        """Добавить звезды с транзакцией"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
+                # Начинаем транзакцию
+                conn.execute("BEGIN TRANSACTION")
+                
+                # Добавляем звезды
                 conn.execute(
-                    "UPDATE users SET stars = stars + ?, total_earned = total_earned + ? WHERE user_id = ?",
-                    (amount, amount, user_id)
+                    "UPDATE users SET stars = stars + ?, total_earned = total_earned + ?, updated_at = ? WHERE user_id = ?",
+                    (amount, amount, datetime.now().isoformat(), user_id)
                 )
+                
+                # Записываем транзакцию
+                conn.execute(
+                    """INSERT INTO transactions 
+                    (user_id, amount, type, description) 
+                    VALUES (?, ?, ?, ?)""",
+                    (user_id, amount, transaction_type, description)
+                )
+                
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка добавления звезд: {e}")
+            with self.get_connection() as conn:
+                conn.rollback()
             return False
     
     def subtract_stars(self, user_id: int, amount: int) -> bool:
         """Вычесть звезды"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 # Проверяем баланс
                 cursor = conn.execute(
                     "SELECT stars FROM users WHERE user_id = ?", 
@@ -180,19 +217,22 @@ class Database:
                 
                 if user and user[0] >= amount:
                     conn.execute(
-                        "UPDATE users SET stars = stars - ?, total_withdrawn = total_withdrawn + ? WHERE user_id = ?",
-                        (amount, amount, user_id)
+                        """UPDATE users 
+                        SET stars = stars - ?, total_withdrawn = total_withdrawn + ?, updated_at = ? 
+                        WHERE user_id = ?""",
+                        (amount, amount, datetime.now().isoformat(), user_id)
                     )
                     conn.commit()
                     return True
                 return False
-        except:
+        except Exception as e:
+            print(f"Ошибка вычитания звезд: {e}")
             return False
     
     def record_transaction(self, user_id: int, amount: int, trans_type: str, desc: str = "") -> bool:
-        """Записать транзакцию"""
+        """Записать транзакцию (отдельно)"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 conn.execute(
                     """INSERT INTO transactions 
                     (user_id, amount, type, description) 
@@ -201,39 +241,42 @@ class Database:
                 )
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка записи транзакции: {e}")
             return False
     
     def update_last_daily(self, user_id: int) -> bool:
         """Обновить время последнего ежедневного бонуса"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 conn.execute(
-                    "UPDATE users SET last_daily = ? WHERE user_id = ?",
-                    (datetime.now().isoformat(), user_id)
+                    "UPDATE users SET last_daily = ?, updated_at = ? WHERE user_id = ?",
+                    (datetime.now().isoformat(), datetime.now().isoformat(), user_id)
                 )
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка обновления daily: {e}")
             return False
     
     def update_last_luck(self, user_id: int) -> bool:
         """Обновить время последней игры"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 conn.execute(
-                    "UPDATE users SET last_luck = ? WHERE user_id = ?",
-                    (datetime.now().isoformat(), user_id)
+                    "UPDATE users SET last_luck = ?, updated_at = ? WHERE user_id = ?",
+                    (datetime.now().isoformat(), datetime.now().isoformat(), user_id)
                 )
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка обновления luck: {e}")
             return False
     
     def add_referral(self, referrer_id: int, referred_id: int) -> bool:
         """Добавить реферала"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 # Проверяем, не регистрировался ли уже по этой ссылке
                 cursor = conn.execute(
                     "SELECT 1 FROM referrals WHERE referred_id = ?", 
@@ -251,43 +294,62 @@ class Database:
                 
                 # Увеличиваем счетчик рефералов
                 conn.execute(
-                    "UPDATE users SET referrals = referrals + 1 WHERE user_id = ?",
-                    (referrer_id,)
+                    "UPDATE users SET referrals = referrals + 1, updated_at = ? WHERE user_id = ?",
+                    (datetime.now().isoformat(), referrer_id)
+                )
+                
+                # Начисляем награду рефереру
+                conn.execute(
+                    """UPDATE users 
+                    SET stars = stars + ?, total_earned = total_earned + ?, updated_at = ? 
+                    WHERE user_id = ?""",
+                    (REF_REWARD, REF_REWARD, datetime.now().isoformat(), referrer_id)
+                )
+                
+                # Записываем транзакцию
+                conn.execute(
+                    """INSERT INTO transactions 
+                    (user_id, amount, type, description) 
+                    VALUES (?, ?, ?, ?)""",
+                    (referrer_id, REF_REWARD, "referral", f"Реферал: {referred_id}")
                 )
                 
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка добавления реферала: {e}")
             return False
     
-    def get_top_users(self, limit=10) -> List[tuple]:
-        """Получить топ пользователей"""
-        with sqlite3.connect(self.path) as conn:
+    def get_user_referrals_count(self, user_id: int) -> int:
+        """Получить количество рефералов пользователя"""
+        with self.get_connection() as conn:
             cursor = conn.execute(
-                "SELECT user_id, username, first_name, stars FROM users ORDER BY stars DESC LIMIT ?",
-                (limit,)
+                "SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", 
+                (user_id,)
             )
-            return cursor.fetchall()
+            result = cursor.fetchone()
+            return result[0] if result else 0
     
     def create_withdrawal(self, user_id: int, amount: int) -> Optional[int]:
         """Создать заявку на вывод"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 cursor = conn.execute(
-                    """INSERT INTO withdrawals (user_id, amount) 
-                    VALUES (?, ?) RETURNING id""",
-                    (user_id, amount)
+                    """INSERT INTO withdrawals (user_id, amount, created_at) 
+                    VALUES (?, ?, ?) RETURNING id""",
+                    (user_id, amount, datetime.now().isoformat())
                 )
                 withdrawal_id = cursor.fetchone()[0]
                 conn.commit()
                 return withdrawal_id
-        except:
+        except Exception as e:
+            print(f"Ошибка создания вывода: {e}")
             return None
     
     def update_withdrawal(self, withdrawal_id: int, status: str, admin_id: int = None) -> bool:
         """Обновить статус вывода"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 conn.execute(
                     """UPDATE withdrawals 
                     SET status = ?, admin_id = ?, updated_at = ? 
@@ -296,12 +358,13 @@ class Database:
                 )
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка обновления вывода: {e}")
             return False
     
     def get_withdrawal(self, withdrawal_id: int) -> Optional[tuple]:
         """Получить заявку на вывод"""
-        with sqlite3.connect(self.path) as conn:
+        with self.get_connection() as conn:
             cursor = conn.execute(
                 "SELECT * FROM withdrawals WHERE id = ?", 
                 (withdrawal_id,)
@@ -310,7 +373,7 @@ class Database:
     
     def get_total_withdrawn(self) -> int:
         """Получить общее количество выведенных звезд"""
-        with sqlite3.connect(self.path) as conn:
+        with self.get_connection() as conn:
             cursor = conn.execute("SELECT total_withdrawn FROM bot_stats WHERE id = 1")
             result = cursor.fetchone()
             return result[0] if result else 1900
@@ -318,15 +381,115 @@ class Database:
     def add_to_total_withdrawn(self, amount: int) -> bool:
         """Добавить к общему количеству выведенных звезд"""
         try:
-            with sqlite3.connect(self.path) as conn:
+            with self.get_connection() as conn:
                 conn.execute(
-                    "UPDATE bot_stats SET total_withdrawn = total_withdrawn + ? WHERE id = 1",
-                    (amount,)
+                    "UPDATE bot_stats SET total_withdrawn = total_withdrawn + ?, updated_at = ? WHERE id = 1",
+                    (amount, datetime.now().isoformat())
                 )
                 conn.commit()
                 return True
-        except:
+        except Exception as e:
+            print(f"Ошибка обновления total_withdrawn: {e}")
             return False
+    
+    def admin_add_stars(self, user_id: int, amount: int, admin_id: int) -> bool:
+        """Админ добавляет звезды пользователю"""
+        try:
+            with self.get_connection() as conn:
+                conn.execute("BEGIN TRANSACTION")
+                
+                # Добавляем звезды
+                conn.execute(
+                    """UPDATE users 
+                    SET stars = stars + ?, total_earned = total_earned + ?, updated_at = ? 
+                    WHERE user_id = ?""",
+                    (amount, amount, datetime.now().isoformat(), user_id)
+                )
+                
+                # Записываем транзакцию
+                conn.execute(
+                    """INSERT INTO transactions 
+                    (user_id, amount, type, description) 
+                    VALUES (?, ?, ?, ?)""",
+                    (user_id, amount, "admin_add", f"Админ {admin_id} добавил звезды")
+                )
+                
+                conn.commit()
+                return True
+        except Exception as e:
+            print(f"Ошибка админ добавления звезд: {e}")
+            with self.get_connection() as conn:
+                conn.rollback()
+            return False
+    
+    def admin_subtract_stars(self, user_id: int, amount: int, admin_id: int) -> bool:
+        """Админ убирает звезды у пользователя"""
+        try:
+            with self.get_connection() as conn:
+                # Проверяем баланс
+                cursor = conn.execute(
+                    "SELECT stars FROM users WHERE user_id = ?", 
+                    (user_id,)
+                )
+                user = cursor.fetchone()
+                
+                if user and user[0] >= amount:
+                    conn.execute("BEGIN TRANSACTION")
+                    
+                    # Убираем звезды
+                    conn.execute(
+                        """UPDATE users 
+                        SET stars = stars - ?, updated_at = ? 
+                        WHERE user_id = ?""",
+                        (amount, datetime.now().isoformat(), user_id)
+                    )
+                    
+                    # Записываем транзакцию
+                    conn.execute(
+                        """INSERT INTO transactions 
+                        (user_id, amount, type, description) 
+                        VALUES (?, ?, ?, ?)""",
+                        (user_id, -amount, "admin_remove", f"Админ {admin_id} убрал звезды")
+                    )
+                    
+                    conn.commit()
+                    return True
+                return False
+        except Exception as e:
+            print(f"Ошибка админ удаления звезд: {e}")
+            with self.get_connection() as conn:
+                conn.rollback()
+            return False
+    
+    def get_user_count(self) -> int:
+        """Получить количество пользователей"""
+        with self.get_connection() as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM users")
+            result = cursor.fetchone()
+            return result[0] if result else 0
+    
+    def get_total_stars(self) -> int:
+        """Получить общее количество звезд у всех пользователей"""
+        with self.get_connection() as conn:
+            cursor = conn.execute("SELECT SUM(stars) FROM users")
+            result = cursor.fetchone()
+            return result[0] if result else 0
+    
+    def get_bot_stats(self) -> dict:
+        """Получить статистику бота"""
+        with self.get_connection() as conn:
+            cursor = conn.execute("SELECT total_withdrawn FROM bot_stats WHERE id = 1")
+            stats = cursor.fetchone()
+            
+            total_withdrawn = stats[0] if stats else 1900
+            total_users = self.get_user_count()
+            total_stars = self.get_total_stars()
+            
+            return {
+                "total_withdrawn": total_withdrawn,
+                "total_users": total_users,
+                "total_stars": total_stars
+            }
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 logging.basicConfig(
@@ -349,6 +512,11 @@ class WithdrawalStates(StatesGroup):
     waiting_amount = State()
     confirm_withdrawal = State()
 
+class AdminStates(StatesGroup):
+    waiting_user_id = State()
+    waiting_amount = State()
+    waiting_broadcast = State()
+
 # ========== КЛАВИАТУРЫ ==========
 def main_menu():
     """Главное меню"""
@@ -368,6 +536,38 @@ def main_menu():
     builder.row(
         types.InlineKeyboardButton(text="💎 Вывод", callback_data="withdraw"),
         types.InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")
+    )
+    return builder.as_markup()
+
+def admin_menu():
+    """Меню администратора"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"),
+        types.InlineKeyboardButton(text="⭐ Добавить звезды", callback_data="admin_add_stars")
+    )
+    builder.row(
+        types.InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"),
+        types.InlineKeyboardButton(text="👥 Пользователи", callback_data="admin_users")
+    )
+    builder.row(
+        types.InlineKeyboardButton(text="🔙 Главное меню", callback_data="menu")
+    )
+    return builder.as_markup()
+
+def admin_add_stars_kb():
+    """Клавиатура для добавления звезд"""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        types.InlineKeyboardButton(text="➕ 10 звезд", callback_data="admin_add_10"),
+        types.InlineKeyboardButton(text="➕ 50 звезд", callback_data="admin_add_50")
+    )
+    builder.row(
+        types.InlineKeyboardButton(text="➕ 100 звезд", callback_data="admin_add_100"),
+        types.InlineKeyboardButton(text="➕ 500 звезд", callback_data="admin_add_500")
+    )
+    builder.row(
+        types.InlineKeyboardButton(text="🔙 В админ-панель", callback_data="admin_panel")
     )
     return builder.as_markup()
 
@@ -467,7 +667,11 @@ async def ensure_user_registered(user_id: int, username: str = None,
         return db.create_user(user_id, username or "", first_name or "", last_name or "")
     return True
 
-# ========== ОБРАБОТЧИКИ КОМАНД ==========
+def get_fake_top():
+    """Получить фейковый топ игроков"""
+    return FAKE_TOP_USERS
+
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ КОМАНД ==========
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     """Команда /start"""
@@ -497,13 +701,9 @@ async def cmd_start(message: Message):
                     # Добавляем реферала
                     if db.add_referral(referrer_id, user.id):
                         # Начисляем награду рефереру
-                        db.add_stars(referrer_id, REF_REWARD)
-                        db.record_transaction(
-                            referrer_id, REF_REWARD, "referral", 
-                            f"Реферал: {user.id}"
-                        )
-        except:
-            pass
+                        db.add_stars(referrer_id, REF_REWARD, "referral", f"Реферал: {user.id}")
+        except Exception as e:
+            logger.error(f"Ошибка обработки реферала: {e}")
     
     # Проверка подписки
     if not await check_subscription(user.id):
@@ -516,6 +716,7 @@ async def cmd_start(message: Message):
         return
     
     # Приветствие
+    stats = db.get_bot_stats()
     welcome_text = f"""
 ⭐ <b>Добро пожаловать, {user.first_name}!</b>
 
@@ -530,9 +731,9 @@ async def cmd_start(message: Message):
 💎 <b>Выводите звезды!</b>
 Минимальный вывод: 15 звезд
 
-🏆 <b>Соревнуйтесь с другими в топе!</b>
+💰 <b>Уже выдали: {stats['total_withdrawn']}+ звезд!</b>
 
-💰 <b>Уже выдали: {db.get_total_withdrawn()}+ звезд!</b>
+📞 <b>Поддержка:</b> {SUPPORT_USERNAME}
     """
     
     await message.answer(welcome_text, reply_markup=main_menu())
@@ -540,37 +741,40 @@ async def cmd_start(message: Message):
 @dp.message(Command("profile"))
 async def cmd_profile(message: Message):
     """Команда /profile"""
+    user = message.from_user
     if not await ensure_user_registered(
-        message.from_user.id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name
+        user.id,
+        user.username,
+        user.first_name,
+        user.last_name
     ):
         await message.answer("Ошибка регистрации!")
         return
     
-    user_data = db.get_user(message.from_user.id)
+    user_data = db.get_user(user.id)
     if not user_data:
         await message.answer("Сначала используйте /start")
         return
     
+    # Получаем актуальное количество рефералов
+    referrals_count = db.get_user_referrals_count(user.id)
     stars_display = generate_stars(user_data[4])
-    total_withdrawn = db.get_total_withdrawn()
+    stats = db.get_bot_stats()
     
     text = f"""
 👤 <b>Личный кабинет</b>
 
 🆔 ID: <code>{user_data[0]}</code>
-📛 Имя: {user_data[2] or 'Не указано'}
+📛 Имя: {user.first_name or 'Не указано'}
 
 ⭐ Звезды: {user_data[4]} {stars_display}
-👥 Рефералы: {user_data[5]}
+👥 Рефералы: {referrals_count}
 💰 Всего заработано: {user_data[6]}
 💎 Выведено: {user_data[7]}
 
 📅 Регистрация: {user_data[8][:10] if user_data[8] else 'Нет данных'}
 
-💰 <b>Всего ботом выдано: {total_withdrawn}+ звезд!</b>
+💰 <b>Всего ботом выдано: {stats['total_withdrawn']}+ звезд!</b>
 
 💡 <b>Вывод доступен от 15 звезд</b>
     """
@@ -579,17 +783,17 @@ async def cmd_profile(message: Message):
 @dp.message(Command("daily"))
 async def cmd_daily(message: Message):
     """Ежедневный бонус"""
-    user_id = message.from_user.id
+    user = message.from_user
     if not await ensure_user_registered(
-        user_id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name
+        user.id,
+        user.username,
+        user.first_name,
+        user.last_name
     ):
         await message.answer("Ошибка регистрации!")
         return
     
-    user_data = db.get_user(user_id)
+    user_data = db.get_user(user.id)
     
     if not user_data:
         await message.answer("Сначала используйте /start")
@@ -614,32 +818,32 @@ async def cmd_daily(message: Message):
     
     # Начисление бонуса
     reward = random.randint(DAILY_MIN, DAILY_MAX)
-    db.add_stars(user_id, reward)
-    db.record_transaction(user_id, reward, "daily", "Ежедневный бонус")
-    db.update_last_daily(user_id)
-    
-    stars_display = generate_stars(reward)
-    await message.answer(
-        f"🎉 <b>Ежедневный бонус!</b>\n\n"
-        f"Вы получили: +{reward} {stars_display}\n\n"
-        f"Заходите завтра!",
-        reply_markup=back_to_menu()
-    )
+    if db.add_stars(user.id, reward, "daily", "Ежедневный бонус"):
+        db.update_last_daily(user.id)
+        stars_display = generate_stars(reward)
+        await message.answer(
+            f"🎉 <b>Ежедневный бонус!</b>\n\n"
+            f"Вы получили: +{reward} {stars_display}\n\n"
+            f"Заходите завтра!",
+            reply_markup=back_to_menu()
+        )
+    else:
+        await message.answer("❌ Ошибка начисления бонуса. Попробуйте позже.", reply_markup=back_to_menu())
 
 @dp.message(Command("luck"))
 async def cmd_luck(message: Message):
     """Игра 'Удача'"""
-    user_id = message.from_user.id
+    user = message.from_user
     if not await ensure_user_registered(
-        user_id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name
+        user.id,
+        user.username,
+        user.first_name,
+        user.last_name
     ):
         await message.answer("Ошибка регистрации!")
         return
     
-    user_data = db.get_user(user_id)
+    user_data = db.get_user(user.id)
     
     if not user_data:
         await message.answer("Сначала используйте /start")
@@ -678,21 +882,21 @@ async def cmd_luck(message: Message):
 @dp.message(Command("referral"))
 async def cmd_referral(message: Message):
     """Реферальная система"""
-    user_id = message.from_user.id
+    user = message.from_user
     if not await ensure_user_registered(
-        user_id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name
+        user.id,
+        user.username,
+        user.first_name,
+        user.last_name
     ):
         await message.answer("Ошибка регистрации!")
         return
     
-    user_data = db.get_user(user_id)
-    ref_code = user_data[12] if user_data and len(user_data) > 12 else f"ref{user_id}"
+    user_data = db.get_user(user.id)
+    ref_code = user_data[12] if user_data and len(user_data) > 12 else f"ref{user.id}"
     ref_link = f"https://t.me/{(await bot.get_me()).username}?start={ref_code}"
     
-    ref_count = user_data[5] if user_data else 0
+    ref_count = db.get_user_referrals_count(user.id)
     
     text = f"""
 👥 <b>Реферальная система</b>
@@ -713,56 +917,53 @@ async def cmd_referral(message: Message):
     """
     
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔗 Копировать ссылку", callback_data=f"copy_{ref_link}"))
-    builder.row(types.InlineKeyboardButton(text="📢 Поделиться", switch_inline_query=f"Зарабатывай звезды со мной! {ref_link}"))
+    builder.row(types.InlineKeyboardButton(text="🔗 Скопировать ссылку", callback_data=f"copy_{ref_link}"))
+    builder.row(types.InlineKeyboardButton(text="📢 Поделиться", switch_inline_query=f"Зарабатывай звезды! {ref_link}"))
     builder.row(types.InlineKeyboardButton(text="🔙 В меню", callback_data="menu"))
     
     await message.answer(text, reply_markup=builder.as_markup())
 
 @dp.message(Command("top"))
 async def cmd_top(message: Message):
-    """Топ игроков"""
-    top_users = db.get_top_users(10)
-    
-    if not top_users:
-        await message.answer("Топ пока пуст! Будьте первым!")
-        return
+    """Топ игроков (фейковый)"""
+    stats = db.get_bot_stats()
+    fake_top = get_fake_top()
     
     text = "🏆 <b>Топ игроков по звездам</b>\n\n"
     
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     
-    for i, (user_id, username, first_name, stars) in enumerate(top_users[:10]):
+    for i, user in enumerate(fake_top[:10]):
         medal = medals[i] if i < len(medals) else f"{i+1}."
-        name = username or first_name or f"User{user_id}"
-        stars_display = generate_stars(stars)
-        text += f"{medal} {name}: {stars} {stars_display}\n"
+        stars_display = generate_stars(user["stars"])
+        text += f"{medal} {user['name']}: {user['stars']} {stars_display}\n"
     
-    text += f"\n💰 <b>Всего выдано: {db.get_total_withdrawn()}+ звезд!</b>\n"
-    text += "\n🎯 <i>Выполняйте задания и поднимайтесь в топе!</i>"
+    text += f"\n💰 <b>Всего выдано: {stats['total_withdrawn']}+ звезд!</b>\n"
+    text += f"👥 <b>Всего игроков: {stats['total_users']}</b>\n"
+    text += "\n🎯 <i>Выполняйте задания и зарабатывайте звезды!</i>"
     
     await message.answer(text, reply_markup=back_to_menu())
 
 @dp.message(Command("withdraw"))
 async def cmd_withdraw(message: Message):
     """Вывод звезд"""
-    user_id = message.from_user.id
+    user = message.from_user
     if not await ensure_user_registered(
-        user_id,
-        message.from_user.username,
-        message.from_user.first_name,
-        message.from_user.last_name
+        user.id,
+        user.username,
+        user.first_name,
+        user.last_name
     ):
         await message.answer("Ошибка регистрации!")
         return
     
-    user_data = db.get_user(user_id)
+    user_data = db.get_user(user.id)
     if not user_data:
         await message.answer("Сначала используйте /start")
         return
     
     balance = user_data[4]
-    total_withdrawn = db.get_total_withdrawn()
+    stats = db.get_bot_stats()
     
     if balance < 15:
         await message.answer(
@@ -783,7 +984,8 @@ async def cmd_withdraw(message: Message):
 🎁 <b>Доступные суммы:</b>
 
 📊 <b>Статистика бота:</b>
-• Всего выдано: {total_withdrawn}+ звезд
+• Всего выдано: {stats['total_withdrawn']}+ звезд
+• Всего игроков: {stats['total_users']}
 • Разработчик: {SUPPORT_USERNAME}
 
 ⚠️ <b>Внимание:</b>
@@ -797,7 +999,7 @@ async def cmd_withdraw(message: Message):
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
     """Справка"""
-    total_withdrawn = db.get_total_withdrawn()
+    stats = db.get_bot_stats()
     
     text = f"""
 ℹ️ <b>Помощь по StarsForQuestion</b>
@@ -821,7 +1023,7 @@ async def cmd_help(message: Message):
 <b>Вывод звезд:</b>
 • Минимальная сумма: 15 звезд
 • Заявки обрабатываются в течение 24 часов
-• Статистика: выдано {total_withdrawn}+ звезд
+• Статистика: выдано {stats['total_withdrawn']}+ звезд
 
 <b>Важно:</b>
 • Для доступа к боту нужно подписаться на канал
@@ -832,6 +1034,70 @@ async def cmd_help(message: Message):
 Разработчик и поддержка: {SUPPORT_USERNAME}
     """
     await message.answer(text, reply_markup=back_to_menu())
+
+# ========== АДМИН КОМАНДЫ ==========
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    """Админ панель"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Доступ запрещен!")
+        return
+    
+    stats = db.get_bot_stats()
+    
+    text = f"""
+⚙️ <b>Админ панель</b>
+
+👑 Админ: {message.from_user.first_name}
+🆔 ID: <code>{message.from_user.id}</code>
+
+📊 <b>Статистика бота:</b>
+• 👥 Пользователей: {stats['total_users']}
+• ⭐ Всего звезд: {stats['total_stars']}
+• 💰 Выдано: {stats['total_withdrawn']}+ звезд
+
+🔧 <b>Доступные функции:</b>
+• Добавить/убрать звезды пользователю
+• Рассылка сообщений
+• Просмотр статистики
+    """
+    
+    await message.answer(text, reply_markup=admin_menu())
+
+@dp.message(Command("addstars"))
+async def cmd_addstars(message: Message, state: FSMContext):
+    """Добавить звезды пользователю (команда)"""
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ Доступ запрещен!")
+        return
+    
+    try:
+        args = message.text.split()
+        if len(args) != 3:
+            await message.answer("❌ Использование: /addstars [user_id] [amount]")
+            return
+        
+        user_id = int(args[1])
+        amount = int(args[2])
+        
+        if amount <= 0:
+            await message.answer("❌ Количество должно быть положительным!")
+            return
+        
+        user_data = db.get_user(user_id)
+        if not user_data:
+            await message.answer("❌ Пользователь не найден!")
+            return
+        
+        if db.admin_add_stars(user_id, amount, message.from_user.id):
+            await message.answer(f"✅ Успешно добавлено {amount} звезд пользователю {user_id}")
+        else:
+            await message.answer("❌ Ошибка добавления звезд")
+            
+    except ValueError:
+        await message.answer("❌ Неверный формат аргументов!")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
 
 # ========== ОБРАБОТЧИКИ CALLBACK ==========
 @dp.callback_query(F.data == "check_sub")
@@ -849,8 +1115,8 @@ async def callback_check_sub(callback: CallbackQuery):
 @dp.callback_query(F.data == "play_luck")
 async def callback_play_luck(callback: CallbackQuery):
     """Играть в удачу"""
-    user_id = callback.from_user.id
-    user_data = db.get_user(user_id)
+    user = callback.from_user
+    user_data = db.get_user(user.id)
     
     if not user_data:
         await callback.answer("Сначала используйте /start!", show_alert=True)
@@ -871,34 +1137,35 @@ async def callback_play_luck(callback: CallbackQuery):
     reward = random.randint(LUCK_MIN, LUCK_MAX)
     
     # Начисление
-    db.add_stars(user_id, reward)
-    db.record_transaction(user_id, reward, "luck", "Мини-игра 'Удача'")
-    db.update_last_luck(user_id)
-    
-    # Результат
-    if reward == 0:
-        result = "😔 Не повезло... Вы не выиграли звезд"
-    elif reward < 5:
-        result = f"🎉 Неплохо! Вы выиграли {reward} звезд"
-    elif reward < 8:
-        result = f"🎊 Отлично! Вы выиграли {reward} звезд!"
+    if db.add_stars(user.id, reward, "luck", "Мини-игра 'Удача'"):
+        db.update_last_luck(user.id)
+        
+        # Результат
+        if reward == 0:
+            result = "😔 Не повезло... Вы не выиграли звезд"
+        elif reward < 5:
+            result = f"🎉 Неплохо! Вы выиграли {reward} звезд"
+        elif reward < 8:
+            result = f"🎊 Отлично! Вы выиграли {reward} звезд!"
+        else:
+            result = f"🔥 ДЖЕКПОТ! {reward} звезд!"
+        
+        await callback.message.edit_text(
+            f"{result}\n\n🎮 Следующая игра через 4 часа!",
+            reply_markup=back_to_menu()
+        )
+        await callback.answer(f"Вы выиграли {reward} звезд!")
     else:
-        result = f"🔥 ДЖЕКПОТ! {reward} звезд!"
-    
-    await callback.message.edit_text(
-        f"{result}\n\n🎮 Следующая игра через 4 часа!",
-        reply_markup=back_to_menu()
-    )
-    await callback.answer(f"Вы выиграли {reward} звезд!")
+        await callback.answer("❌ Ошибка начисления!", show_alert=True)
 
 @dp.callback_query(F.data.startswith("withdraw_"))
 async def callback_withdraw_amount(callback: CallbackQuery, state: FSMContext):
     """Выбор суммы для вывода"""
     try:
         amount = int(callback.data.split("_")[1])
-        user_id = callback.from_user.id
+        user = callback.from_user
         
-        user_data = db.get_user(user_id)
+        user_data = db.get_user(user.id)
         if not user_data:
             await callback.answer("Сначала используйте /start!", show_alert=True)
             return
@@ -914,7 +1181,7 @@ async def callback_withdraw_amount(callback: CallbackQuery, state: FSMContext):
             return
         
         # Создаем предварительную заявку
-        withdrawal_id = db.create_withdrawal(user_id, amount)
+        withdrawal_id = db.create_withdrawal(user.id, amount)
         if not withdrawal_id:
             await callback.answer("Ошибка создания заявки!", show_alert=True)
             return
@@ -926,7 +1193,7 @@ async def callback_withdraw_amount(callback: CallbackQuery, state: FSMContext):
 
 📋 <b>Детали заявки:</b>
 • Сумма: {amount} звезд
-• Баланс: {balance} звезд
+• Ваш баланс: {balance} звезд
 • Остаток после вывода: {balance - amount} звезд
 
 ⚠️ <b>Внимание:</b>
@@ -991,6 +1258,7 @@ async def callback_confirm_withdrawal(callback: CallbackQuery, state: FSMContext
         
         # Отправляем заявку в канал
         censored_username = censor_username(user.username or user.first_name)
+        stats = db.get_bot_stats()
         
         channel_text = f"""
 📥 <b>Новая заявка на вывод!</b>
@@ -1001,11 +1269,15 @@ async def callback_confirm_withdrawal(callback: CallbackQuery, state: FSMContext
 💰 <b>Баланс был:</b> {balance} звезд
 ⏰ <b>Время:</b> {datetime.now().strftime('%H:%M %d.%m.%Y')}
 
+📊 <b>Статистика бота:</b>
+• Всего выдано: {stats['total_withdrawn']}+ звезд
+• Всего игроков: {stats['total_users']}
+
 #вывод #заявка_{withdrawal_id}
         """
         
         try:
-            message = await bot.send_message(
+            message_sent = await bot.send_message(
                 chat_id=WITHDRAWAL_CHANNEL_ID,
                 text=channel_text,
                 reply_markup=admin_withdrawal_kb(withdrawal_id)
@@ -1015,7 +1287,7 @@ async def callback_confirm_withdrawal(callback: CallbackQuery, state: FSMContext
             with sqlite3.connect("bot_data.db") as conn:
                 conn.execute(
                     "UPDATE withdrawals SET message_id = ? WHERE id = ?",
-                    (message.message_id, withdrawal_id)
+                    (message_sent.message_id, withdrawal_id)
                 )
                 conn.commit()
                 
@@ -1023,20 +1295,21 @@ async def callback_confirm_withdrawal(callback: CallbackQuery, state: FSMContext
             logger.error(f"Ошибка отправки в канал: {e}")
         
         # Уведомляем пользователя
-        total_withdrawn = db.get_total_withdrawn() + amount
         db.add_to_total_withdrawn(amount)
+        updated_stats = db.get_bot_stats()
         
         await callback.message.edit_text(
             f"✅ <b>Заявка #{withdrawal_id} создана!</b>\n\n"
             f"💎 <b>Сумма:</b> {amount} звезд\n"
             f"⏰ <b>Статус:</b> На модерации\n"
             f"🕐 <b>Ожидайте:</b> До 24 часов\n\n"
-            f"💰 <b>Всего выдано:</b> {total_withdrawn}+ звезд\n\n"
+            f"💰 <b>Всего выдано:</b> {updated_stats['total_withdrawn']}+ звезд\n\n"
             f"📞 <b>Поддержка:</b> {SUPPORT_USERNAME}",
             reply_markup=back_to_menu()
         )
         
         await callback.answer("Заявка отправлена на модерацию!")
+        await state.clear()
         
     except Exception as e:
         logger.error(f"Ошибка подтверждения вывода: {e}")
@@ -1082,6 +1355,7 @@ async def callback_admin_accept(callback: CallbackQuery):
         
         # Обновляем сообщение в канале
         censored_username = censor_username(username or f"user{user_id}")
+        stats = db.get_bot_stats()
         
         completed_text = f"""
 ✅ <b>Заявка #{withdrawal_id} ВЫПОЛНЕНА!</b>
@@ -1091,9 +1365,11 @@ async def callback_admin_accept(callback: CallbackQuery):
 👑 <b>Исполнитель:</b> @{callback.from_user.username or 'admin'}
 ⏰ <b>Время выполнения:</b> {datetime.now().strftime('%H:%M %d.%m.%Y')}
 
-💰 <b>Всего выдано:</b> {db.get_total_withdrawn()}+ звезд!
+💰 <b>Всего выдано:</b> {stats['total_withdrawn']}+ звезд!
 
 🎁 <b>Подарок отправлен!</b> 🎁
+
+📞 <b>Разработчик и поддержка:</b> {SUPPORT_USERNAME}
         """
         
         try:
@@ -1115,8 +1391,9 @@ async def callback_admin_accept(callback: CallbackQuery):
                 f"💎 <b>Сумма:</b> {amount} звезд\n"
                 f"👑 <b>Исполнитель:</b> @{callback.from_user.username or 'admin'}\n"
                 f"⏰ <b>Время:</b> {datetime.now().strftime('%H:%M %d.%m.%Y')}\n\n"
-                f"💰 <b>Всего ботом выдано:</b> {db.get_total_withdrawn()}+ звезд!\n\n"
-                f"🎁 <b>Спасибо за использование бота!</b>"
+                f"💰 <b>Всего ботом выдано:</b> {stats['total_withdrawn']}+ звезд!\n\n"
+                f"🎁 <b>Спасибо за использование бота!</b>\n"
+                f"📞 <b>Разработчик:</b> {SUPPORT_USERNAME}"
             )
         except:
             pass
@@ -1149,13 +1426,13 @@ async def callback_admin_reject(callback: CallbackQuery):
         user_id, amount = withdrawal_data[1], withdrawal_data[2]
         
         # Возвращаем звезды пользователю
-        db.add_stars(user_id, amount)
-        db.record_transaction(user_id, amount, "refund", f"Возврат по заявке #{withdrawal_id}")
+        db.add_stars(user_id, amount, "refund", f"Возврат по заявке #{withdrawal_id}")
         
         # Обновляем статус
         db.update_withdrawal(withdrawal_id, "rejected", callback.from_user.id)
         
         # Обновляем сообщение в канале
+        stats = db.get_bot_stats()
         rejected_text = f"""
 ❌ <b>Заявка #{withdrawal_id} ОТКЛОНЕНА!</b>
 
@@ -1163,7 +1440,7 @@ async def callback_admin_reject(callback: CallbackQuery):
 👑 <b>Исполнитель:</b> @{callback.from_user.username or 'admin'}
 ⏰ <b>Время:</b> {datetime.now().strftime('%H:%M %d.%m.%Y')}
 
-💰 <b>Всего выдано:</b> {db.get_total_withdrawn()}+ звезд!
+💰 <b>Всего выдано:</b> {stats['total_withdrawn']}+ звезд!
 
 ⚠️ <b>Заявка отклонена, звезды возвращены пользователю.</b>
         """
@@ -1199,6 +1476,253 @@ async def callback_admin_reject(callback: CallbackQuery):
         logger.error(f"Ошибка отклонения заявки: {e}")
         await callback.answer("Ошибка!", show_alert=True)
 
+# ========== АДМИН CALLBACK ОБРАБОТЧИКИ ==========
+@dp.callback_query(F.data == "admin_panel")
+async def callback_admin_panel(callback: CallbackQuery):
+    """Админ панель"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    
+    await cmd_admin(callback.message)
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_stats")
+async def callback_admin_stats(callback: CallbackQuery):
+    """Статистика админа"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    
+    stats = db.get_bot_stats()
+    
+    text = f"""
+📊 <b>Детальная статистика бота</b>
+
+👥 <b>Пользователи:</b>
+• Всего: {stats['total_users']}
+• Активных (за неделю): в разработке
+
+⭐ <b>Звезды:</b>
+• Всего звезд в системе: {stats['total_stars']}
+• Всего заработано: {stats['total_stars']}
+• Всего выведено: {stats['total_withdrawn']}
+
+💰 <b>Финансы:</b>
+• Всего заявок на вывод: в разработке
+• Выполнено заявок: в разработке
+• Отклонено заявок: в разработке
+
+🔄 <b>Обновлено:</b> {datetime.now().strftime('%H:%M %d.%m.%Y')}
+    """
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardBuilder()
+            .row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
+            .as_markup()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data == "admin_add_stars")
+async def callback_admin_add_stars(callback: CallbackQuery):
+    """Добавить звезды (меню)"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    
+    text = """
+⭐ <b>Добавление звезд пользователю</b>
+
+Выберите количество звезд для добавления:
+
+<code>/addstars [user_id] [amount]</code> - добавить звезды
+<code>/remstars [user_id] [amount]</code> - убрать звезды
+
+Или используйте кнопки ниже для быстрого добавления:
+    """
+    
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_add_stars_kb()
+    )
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("admin_add_"))
+async def callback_admin_add_quick(callback: CallbackQuery, state: FSMContext):
+    """Быстрое добавление звезд"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    
+    try:
+        amount_map = {
+            "admin_add_10": 10,
+            "admin_add_50": 50,
+            "admin_add_100": 100,
+            "admin_add_500": 500
+        }
+        
+        amount = amount_map.get(callback.data)
+        if not amount:
+            await callback.answer("Неизвестная команда!", show_alert=True)
+            return
+        
+        await state.update_data(admin_amount=amount)
+        await state.set_state(AdminStates.waiting_user_id)
+        
+        await callback.message.edit_text(
+            f"⭐ <b>Добавление {amount} звезд</b>\n\n"
+            f"Отправьте ID пользователя, которому нужно добавить {amount} звезд:",
+            reply_markup=InlineKeyboardBuilder()
+                .row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel"))
+                .as_markup()
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка быстрого добавления: {e}")
+        await callback.answer("Ошибка!", show_alert=True)
+
+@dp.message(AdminStates.waiting_user_id)
+async def admin_waiting_user_id(message: Message, state: FSMContext):
+    """Обработка ID пользователя для админа"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        user_id = int(message.text)
+        data = await state.get_data()
+        amount = data.get("admin_amount", 100)
+        
+        user_data = db.get_user(user_id)
+        if not user_data:
+            await message.answer("❌ Пользователь не найден!")
+            await state.clear()
+            return
+        
+        # Добавляем звезды
+        if db.admin_add_stars(user_id, amount, message.from_user.id):
+            await message.answer(
+                f"✅ Успешно добавлено {amount} звезд пользователю {user_id}\n\n"
+                f"Имя: {user_data[2] or 'Неизвестно'}\n"
+                f"Новый баланс: {user_data[4] + amount} звезд"
+            )
+        else:
+            await message.answer("❌ Ошибка добавления звезд")
+        
+        await state.clear()
+        
+    except ValueError:
+        await message.answer("❌ Неверный формат ID! Отправьте число.")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)}")
+        await state.clear()
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def callback_admin_broadcast(callback: CallbackQuery, state: FSMContext):
+    """Рассылка сообщений"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    
+    await state.set_state(AdminStates.waiting_broadcast)
+    
+    await callback.message.edit_text(
+        "📢 <b>Рассылка сообщений</b>\n\n"
+        "Отправьте сообщение, которое нужно разослать всем пользователям:",
+        reply_markup=InlineKeyboardBuilder()
+            .row(types.InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel"))
+            .as_markup()
+    )
+    await callback.answer()
+
+@dp.message(AdminStates.waiting_broadcast)
+async def admin_broadcast_message(message: Message, state: FSMContext):
+    """Обработка рассылки"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    await message.answer("⏳ Начинаю рассылку...")
+    
+    try:
+        # Получаем всех пользователей
+        with sqlite3.connect("bot_data.db") as conn:
+            cursor = conn.execute("SELECT user_id FROM users")
+            users = cursor.fetchall()
+        
+        success = 0
+        failed = 0
+        
+        for user_row in users:
+            user_id = user_row[0]
+            try:
+                await bot.send_message(
+                    user_id,
+                    f"📢 <b>Важное сообщение от администрации!</b>\n\n"
+                    f"{message.text}\n\n"
+                    f"С уважением, команда StarsForQuestion"
+                )
+                success += 1
+                await asyncio.sleep(0.1)  # Задержка чтобы не превысить лимиты
+            except:
+                failed += 1
+        
+        await message.answer(
+            f"✅ <b>Рассылка завершена!</b>\n\n"
+            f"• Успешно: {success} пользователей\n"
+            f"• Не удалось: {failed} пользователей"
+        )
+        
+    except Exception as e:
+        await message.answer(f"❌ Ошибка рассылки: {str(e)}")
+    
+    await state.clear()
+
+@dp.callback_query(F.data == "admin_users")
+async def callback_admin_users(callback: CallbackQuery):
+    """Пользователи админа"""
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("Доступ запрещен!", show_alert=True)
+        return
+    
+    try:
+        with sqlite3.connect("bot_data.db") as conn:
+            cursor = conn.execute("SELECT COUNT(*) FROM users")
+            total_users = cursor.fetchone()[0]
+            
+            cursor = conn.execute(
+                "SELECT user_id, username, first_name, stars FROM users ORDER BY created_at DESC LIMIT 10"
+            )
+            recent_users = cursor.fetchall()
+        
+        text = f"""
+👥 <b>Последние пользователи</b>
+
+Всего пользователей: {total_users}
+
+<b>Последние 10 регистраций:</b>
+"""
+        
+        for i, (user_id, username, first_name, stars) in enumerate(recent_users, 1):
+            name = username or first_name or f"User{user_id}"
+            text += f"{i}. {name} ({stars}⭐) | ID: {user_id}\n"
+        
+        text += "\n💡 <i>Для управления используйте команды /addstars или /remstars</i>"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardBuilder()
+                .row(types.InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
+                .as_markup()
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения пользователей: {e}")
+        await callback.answer("Ошибка!", show_alert=True)
+
+# ========== ОСНОВНЫЕ CALLBACK ОБРАБОТЧИКИ ==========
 @dp.callback_query(F.data == "menu")
 async def callback_menu(callback: CallbackQuery):
     """Возврат в меню"""
@@ -1244,10 +1768,16 @@ async def callback_withdraw(callback: CallbackQuery):
     await cmd_withdraw(callback.message)
     await callback.answer()
 
+@dp.callback_query(F.data == "help")
+async def callback_help(callback: CallbackQuery):
+    """Помощь из меню"""
+    await cmd_help(callback.message)
+    await callback.answer()
+
 @dp.callback_query(F.data == "tasks")
 async def callback_tasks(callback: CallbackQuery):
     """Задания из меню"""
-    total_withdrawn = db.get_total_withdrawn()
+    stats = db.get_bot_stats()
     
     text = f"""
 🎯 <b>Доступные задания</b>
@@ -1273,7 +1803,8 @@ async def callback_tasks(callback: CallbackQuery):
    • Награда: +{GROUP_REWARD} звезд
    
 💰 <b>Статистика бота:</b>
-• Выдано звезд: {total_withdrawn}+
+• Выдано звезд: {stats['total_withdrawn']}+
+• Всего игроков: {stats['total_users']}
 • Разработчик: {SUPPORT_USERNAME}
 
 ⭐ <b>Выполняйте задания и зарабатывайте!</b>
@@ -1289,22 +1820,14 @@ async def callback_tasks(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
 
-@dp.callback_query(F.data == "help")
-async def callback_help(callback: CallbackQuery):
-    """Помощь из меню"""
-    await cmd_help(callback.message)
-    await callback.answer()
-
 @dp.callback_query(F.data.startswith("copy_"))
 async def callback_copy(callback: CallbackQuery):
     """Копирование ссылки"""
-    import pyperclip
     try:
         ref_link = callback.data[5:]
-        pyperclip.copy(ref_link)
-        await callback.answer("Ссылка скопирована в буфер обмена!", show_alert=True)
-    except:
         await callback.answer(f"Ссылка: {ref_link}", show_alert=True)
+    except:
+        await callback.answer("Ошибка копирования!", show_alert=True)
 
 # ========== ОБРАБОТЧИК ГРУПП ==========
 @dp.chat_member()
@@ -1321,7 +1844,7 @@ async def chat_member_update(update: ChatMemberUpdated):
                 for admin in admins:
                     if not admin.user.is_bot:
                         user_id = admin.user.id
-                        # Награждаем только если пользователь зарегистрирован
+                        # Проверяем, зарегистрирован ли пользователь
                         user_data = db.get_user(user_id)
                         if user_data:
                             # Проверяем, не получал ли уже награду за эту группу
@@ -1332,31 +1855,29 @@ async def chat_member_update(update: ChatMemberUpdated):
                                     (user_id, f"%группу {chat_id}%")
                                 )
                                 if not cursor.fetchone():
-                                    db.add_stars(user_id, GROUP_REWARD)
-                                    db.record_transaction(
-                                        user_id, GROUP_REWARD, "group", 
-                                        f"Добавление в группу {chat_id}"
-                                    )
-                                    
-                                    # Уведомление
-                                    try:
-                                        await bot.send_message(
-                                            user_id,
-                                            f"🎉 <b>Бонус за добавление бота в группу!</b>\n\n"
-                                            f"Вы добавили бота в группу\n"
-                                            f"На ваш счет начислено +{GROUP_REWARD} звезд!"
-                                        )
-                                    except:
-                                        pass
+                                    # Начисляем награду
+                                    if db.add_stars(user_id, GROUP_REWARD, "group", f"Добавление в группу {chat_id}"):
+                                        # Уведомление
+                                        try:
+                                            await bot.send_message(
+                                                user_id,
+                                                f"🎉 <b>Бонус за добавление бота в группу!</b>\n\n"
+                                                f"Вы добавили бота в группу\n"
+                                                f"На ваш счет начислено +{GROUP_REWARD} звезд!"
+                                            )
+                                        except:
+                                            pass
                 
                 # Приветствие в группе
+                stats = db.get_bot_stats()
                 await bot.send_message(
                     chat_id,
                     f"👋 <b>Приветствую участников!</b>\n\n"
                     f"Я <b>StarsForQuestion</b> - бот для заработка звезд!\n\n"
                     f"Напишите мне в ЛС: @{(await bot.get_me()).username}\n"
                     f"⭐ Админы получили бонус за добавление!\n"
-                    f"💰 Уже выдано: {db.get_total_withdrawn()}+ звезд!"
+                    f"💰 Уже выдано: {stats['total_withdrawn']}+ звезд!\n"
+                    f"📞 <b>Разработчик:</b> {SUPPORT_USERNAME}"
                 )
         except Exception as e:
             logger.error(f"Ошибка обработки группы: {e}")
@@ -1381,7 +1902,8 @@ try:
         return {
             "status": "ok", 
             "time": datetime.now().isoformat(),
-            "total_withdrawn": db.get_total_withdrawn()
+            "total_withdrawn": db.get_total_withdrawn(),
+            "total_users": db.get_user_count()
         }, 200
     
     def run_flask():
