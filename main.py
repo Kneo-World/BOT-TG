@@ -1,19 +1,13 @@
-"""
-StarsForQuestion - бот для заработка виртуальных звезд
-Версия 4.1 - исправлен конфликт множественных инстансов
-"""
-
 import asyncio
 import logging
 import os
 import sys
 import sqlite3
 import random
-import signal
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Union, List
 
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F, BaseMiddleware
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
@@ -25,806 +19,370 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramBadRequest
 
-# ========== КОНФИГУРАЦИЯ ==========
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    print("❌ Ошибка: BOT_TOKEN не найден!")
-    print("📝 Добавьте BOT_TOKEN в настройках Render")
-    sys.exit(1)
+# =================================================================
+# КОНФИГУРАЦИЯ (Настрой через переменные окружения)
+# =================================================================
+BOT_TOKEN = os.getenv("BOT_TOKEN", "ТВОЙ_ТОКЕН_ТУТ")
+CHANNEL_ID = os.getenv("CHANNEL_ID", "-1001234567890")  # ID канала для проверки подписки
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/nft0top")
+WITHDRAWAL_LOG_CHANNEL = os.getenv("WITHDRAWAL_CHANNEL", "-1001234567890") # Где админы апрувят
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "546416518").split(",") if id.strip()]
+SUPPORT_USER = "@Nft_top3"
 
-# Настройки
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "nft0top")
-CHANNEL_ID = os.getenv("CHANNEL_ID", "-1001234567890")
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
-WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL_ID", "-1001234567890")
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
-PORT = int(os.getenv("PORT", 10000))
+# Настройки экономики (Реальные)
+DAILY_REWARDS = (1, 5)
+LUCK_REWARDS = (0, 10)
+REF_BONUS = 5
+GROUP_BONUS = 2
+MIN_WITHDRAW = 15
 
-# Экономика
-DAILY_MIN = 1
-DAILY_MAX = 5
-LUCK_MIN = 0
-LUCK_MAX = 10
-LUCK_COOLDOWN = 4 * 60 * 60  # 4 часа
-REF_REWARD = 5  # Награда за реферала
-GROUP_REWARD = 2  # Награда за добавление в группу
-WITHDRAWAL_OPTIONS = [15, 25, 50, 100]  # Опции вывода
+# Настройки накрутки (Для пользователей)
+FAKE_USERS_BASE = 1250  # Стартовое число
+FAKE_WITHDRAW_MULT = 15 # Множитель выплат
+FAKE_ONLINE_RANGE = (40, 120)
 
-# Фейковые данные для пользователей (везде кроме админ-панели)
-FAKE_TOTAL_USERS = 1250
-FAKE_TOTAL_STARS = 58200
-FAKE_TOTAL_WITHDRAWN = 2150
-
-# Фейковый топ игроков
-FAKE_TOP_USERS = [
-    {"name": "Алексей П.", "stars": 2450},
-    {"name": "Мария С.", "stars": 2180},
-    {"name": "Иван И.", "stars": 1950},
-    {"name": "Екатерина С.", "stars": 1820},
-    {"name": "Дмитрий К.", "stars": 1750},
-    {"name": "Анна В.", "stars": 1680},
-    {"name": "Сергей П.", "stars": 1620},
-    {"name": "Ольга Н.", "stars": 1550},
-    {"name": "Александр В.", "stars": 1480},
-    {"name": "Наталья М.", "stars": 1420}
-]
-
-# ========== БАЗА ДАННЫХ (ИСПРАВЛЕННАЯ) ==========
+# =================================================================
+# БАЗА ДАННЫХ (Расширенная архитектура)
+# =================================================================
 class Database:
-    """Исправленная база данных SQLite"""
-    
-    def __init__(self, path="bot_data.db"):
-        self.path = path
-        self.init_db()
-    
-    def get_connection(self):
-        """Получить соединение с БД"""
-        return sqlite3.connect(self.path, check_same_thread=False, timeout=10)
-    
-    def init_db(self):
-        """Инициализация таблиц"""
-        conn = self.get_connection()
-        try:
-            # Таблица пользователей
+    def __init__(self, db_path="stars_pro.db"):
+        self.db_path = db_path
+        self._create_tables()
+
+    def _get_conn(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _create_tables(self):
+        with self._get_conn() as conn:
+            # Юзеры
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER PRIMARY KEY,
                     username TEXT,
                     first_name TEXT,
-                    last_name TEXT,
                     stars INTEGER DEFAULT 0,
-                    referrals INTEGER DEFAULT 0,
+                    ref_by INTEGER,
+                    referrals_count INTEGER DEFAULT 0,
                     total_earned INTEGER DEFAULT 0,
-                    total_withdrawn INTEGER DEFAULT 0,
-                    created_at TEXT,
                     last_daily TEXT,
                     last_luck TEXT,
-                    is_subscribed INTEGER DEFAULT 0,
-                    ref_code TEXT UNIQUE
+                    reg_date TEXT
                 )
             """)
-            
-            # Таблица рефералов
+            # Транзакции (для истории и аудита)
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS referrals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    referrer_id INTEGER,
-                    referred_id INTEGER UNIQUE,
-                    created_at TEXT
-                )
-            """)
-            
-            # Таблица транзакций
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS transactions (
+                CREATE TABLE IF NOT EXISTS logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER,
                     amount INTEGER,
                     type TEXT,
-                    description TEXT,
-                    created_at TEXT
+                    timestamp TEXT
                 )
             """)
-            
-            # Таблица выводов
+            # Заявки на вывод
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS withdrawals (
+                CREATE TABLE IF NOT EXISTS cashouts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id INTEGER,
                     amount INTEGER,
                     status TEXT DEFAULT 'pending',
-                    admin_id INTEGER,
-                    message_id INTEGER,
-                    created_at TEXT,
-                    updated_at TEXT
+                    created_at TEXT
                 )
             """)
-            
-            # Таблица статистики
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS bot_stats (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    total_withdrawn INTEGER DEFAULT 1900,
-                    total_users INTEGER DEFAULT 0,
-                    total_stars INTEGER DEFAULT 0
-                )
-            """)
-            
-            # Инициализируем статистику
-            conn.execute("""
-                INSERT OR IGNORE INTO bot_stats (id, total_withdrawn, total_users, total_stars) 
-                VALUES (1, 1900, 0, 0)
-            """)
-            
-            # Создаем индексы для оптимизации
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_users_user_id ON users(user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id)")
-            
             conn.commit()
-        except Exception as e:
-            print(f"Ошибка инициализации БД: {e}")
-        finally:
-            conn.close()
-    
-    def get_user(self, user_id: int) -> Optional[tuple]:
-        """Получить пользователя"""
-        conn = self.get_connection()
-        try:
-            cursor = conn.execute(
-                "SELECT * FROM users WHERE user_id = ?", 
-                (user_id,)
-            )
-            return cursor.fetchone()
-        except Exception as e:
-            print(f"Ошибка получения пользователя: {e}")
-            return None
-        finally:
-            conn.close()
-    
-    def create_user(self, user_id: int, username: str, first_name: str, last_name: str) -> bool:
-        """Создать нового пользователя"""
-        conn = self.get_connection()
-        try:
-            # Генерируем реферальный код
-            ref_code = f"ref{user_id}"
-            
-            conn.execute(
-                """INSERT OR IGNORE INTO users 
-                (user_id, username, first_name, last_name, ref_code, created_at, stars) 
-                VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, username or "", first_name or "", last_name or "", ref_code, 
-                 datetime.now().isoformat(), 0)
-            )
-            
-            if conn.total_changes > 0:
-                # Обновляем статистику только если добавили нового пользователя
-                cursor = conn.execute("SELECT total_users FROM bot_stats WHERE id = 1")
-                total_users = cursor.fetchone()[0]
-                conn.execute(
-                    "UPDATE bot_stats SET total_users = ? WHERE id = 1",
-                    (total_users + 1,)
-                )
-            
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка создания пользователя: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def update_user_info(self, user_id: int, username: str, first_name: str, last_name: str) -> bool:
-        """Обновить информацию о пользователе"""
-        conn = self.get_connection()
-        try:
-            conn.execute(
-                """UPDATE users SET username = ?, first_name = ?, last_name = ? 
-                WHERE user_id = ?""",
-                (username or "", first_name or "", last_name or "", user_id)
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка обновления пользователя: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def add_stars(self, user_id: int, amount: int) -> bool:
-        """Добавить звезды (исправленная версия)"""
-        if amount <= 0:
-            return False
-            
-        conn = self.get_connection()
-        try:
-            # Начинаем транзакцию
-            conn.execute("BEGIN TRANSACTION")
-            
-            # Получаем текущий баланс
-            cursor = conn.execute("SELECT stars FROM users WHERE user_id = ?", (user_id,))
-            result = cursor.fetchone()
-            if not result:
-                conn.rollback()
-                return False
-            
-            current_stars = result[0]
-            new_stars = current_stars + amount
-            
-            # Обновляем баланс
-            conn.execute(
-                "UPDATE users SET stars = ?, total_earned = total_earned + ? WHERE user_id = ?",
-                (new_stars, amount, user_id)
-            )
-            
-            # Обновляем общую статистику звезд
-            cursor = conn.execute("SELECT total_stars FROM bot_stats WHERE id = 1")
-            total_stars = cursor.fetchone()[0]
-            conn.execute(
-                "UPDATE bot_stats SET total_stars = ? WHERE id = 1",
-                (total_stars + amount,)
-            )
-            
-            # Записываем транзакцию
-            conn.execute(
-                """INSERT INTO transactions (user_id, amount, type, description, created_at) 
-                VALUES (?, ?, ?, ?, ?)""",
-                (user_id, amount, "add", "Начисление звезд", datetime.now().isoformat())
-            )
-            
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка добавления звезд: {e}")
-            conn.rollback()
-            return False
-        finally:
-            conn.close()
-    
-    def subtract_stars(self, user_id: int, amount: int) -> bool:
-        """Вычесть звезды (исправленная версия)"""
-        if amount <= 0:
-            return False
-            
-        conn = self.get_connection()
-        try:
-            # Начинаем транзакцию
-            conn.execute("BEGIN TRANSACTION")
-            
-            # Проверяем баланс
-            cursor = conn.execute("SELECT stars FROM users WHERE user_id = ?", (user_id,))
-            result = cursor.fetchone()
-            if not result:
-                conn.rollback()
-                return False
-            
-            current_stars = result[0]
-            if current_stars < amount:
-                conn.rollback()
-                return False
-            
-            new_stars = current_stars - amount
-            
-            # Обновляем баланс
-            conn.execute(
-                """UPDATE users SET stars = ?, total_withdrawn = total_withdrawn + ? 
-                WHERE user_id = ?""",
-                (new_stars, amount, user_id)
-            )
-            
-            # Обновляем общую статистику звезд
-            cursor = conn.execute("SELECT total_stars FROM bot_stats WHERE id = 1")
-            total_stars = cursor.fetchone()[0]
-            conn.execute(
-                "UPDATE bot_stats SET total_stars = ? WHERE id = 1",
-                (total_stars - amount,)
-            )
-            
-            # Записываем транзакцию
-            conn.execute(
-                """INSERT INTO transactions (user_id, amount, type, description, created_at) 
-                VALUES (?, ?, ?, ?, ?)""",
-                (user_id, -amount, "withdraw", "Списание звезд", datetime.now().isoformat())
-            )
-            
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка списания звезд: {e}")
-            conn.rollback()
-            return False
-        finally:
-            conn.close()
-    
-    def record_transaction(self, user_id: int, amount: int, trans_type: str, desc: str = "") -> bool:
-        """Записать транзакцию"""
-        conn = self.get_connection()
-        try:
-            conn.execute(
-                """INSERT INTO transactions (user_id, amount, type, description, created_at) 
-                VALUES (?, ?, ?, ?, ?)""",
-                (user_id, amount, trans_type, desc, datetime.now().isoformat())
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка записи транзакции: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def update_last_daily(self, user_id: int) -> bool:
-        """Обновить время последнего ежедневного бонуса"""
-        conn = self.get_connection()
-        try:
-            conn.execute(
-                "UPDATE users SET last_daily = ? WHERE user_id = ?",
-                (datetime.now().isoformat(), user_id)
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка обновления daily: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def update_last_luck(self, user_id: int) -> bool:
-        """Обновить время последней игры"""
-        conn = self.get_connection()
-        try:
-            conn.execute(
-                "UPDATE users SET last_luck = ? WHERE user_id = ?",
-                (datetime.now().isoformat(), user_id)
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка обновления luck: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def add_referral(self, referrer_id: int, referred_id: int) -> bool:
-        """Добавить реферала"""
-        if referrer_id == referred_id:
-            return False
-            
-        conn = self.get_connection()
-        try:
-            # Проверяем, не существует ли уже
-            cursor = conn.execute(
-                "SELECT 1 FROM referrals WHERE referred_id = ?", 
-                (referred_id,)
-            )
-            if cursor.fetchone():
-                return False
-            
-            # Начинаем транзакцию
-            conn.execute("BEGIN TRANSACTION")
-            
-            # Добавляем реферала
-            conn.execute(
-                """INSERT INTO referrals (referrer_id, referred_id, created_at) 
-                VALUES (?, ?, ?)""",
-                (referrer_id, referred_id, datetime.now().isoformat())
-            )
-            
-            # Обновляем счетчик рефералов
-            conn.execute(
-                "UPDATE users SET referrals = referrals + 1 WHERE user_id = ?",
-                (referrer_id,)
-            )
-            
-            # Начисляем награду (используем уже существующий метод)
-            cursor = conn.execute("SELECT stars FROM users WHERE user_id = ?", (referrer_id,))
-            result = cursor.fetchone()
-            if result:
-                new_stars = result[0] + REF_REWARD
-                conn.execute(
-                    "UPDATE users SET stars = ?, total_earned = total_earned + ? WHERE user_id = ?",
-                    (new_stars, REF_REWARD, referrer_id)
-                )
-                
-                # Обновляем общую статистику звезд
-                cursor = conn.execute("SELECT total_stars FROM bot_stats WHERE id = 1")
-                total_stars = cursor.fetchone()[0]
-                conn.execute(
-                    "UPDATE bot_stats SET total_stars = ? WHERE id = 1",
-                    (total_stars + REF_REWARD,)
-                )
-                
-                # Записываем транзакцию
-                conn.execute(
-                    """INSERT INTO transactions (user_id, amount, type, description, created_at) 
-                    VALUES (?, ?, ?, ?, ?)""",
-                    (referrer_id, REF_REWARD, "referral", f"Реферал: {referred_id}", datetime.now().isoformat())
-                )
-            
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка добавления реферала: {e}")
-            conn.rollback()
-            return False
-        finally:
-            conn.close()
-    
-    def get_user_referrals_count(self, user_id: int) -> int:
-        """Получить количество рефералов пользователя"""
-        conn = self.get_connection()
-        try:
-            cursor = conn.execute(
-                "SELECT COUNT(*) FROM referrals WHERE referrer_id = ?", 
-                (user_id,)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else 0
-        except Exception as e:
-            print(f"Ошибка получения рефералов: {e}")
-            return 0
-        finally:
-            conn.close()
-    
-    def create_withdrawal(self, user_id: int, amount: int) -> Optional[int]:
-        """Создать заявку на вывод"""
-        conn = self.get_connection()
-        try:
-            cursor = conn.execute(
-                """INSERT INTO withdrawals (user_id, amount, created_at) 
-                VALUES (?, ?, ?)""",
-                (user_id, amount, datetime.now().isoformat())
-            )
-            withdrawal_id = cursor.lastrowid
-            conn.commit()
-            return withdrawal_id
-        except Exception as e:
-            print(f"Ошибка создания вывода: {e}")
-            return None
-        finally:
-            conn.close()
-    
-    def update_withdrawal(self, withdrawal_id: int, status: str, admin_id: int = None) -> bool:
-        """Обновить статус вывода"""
-        conn = self.get_connection()
-        try:
-            conn.execute(
-                """UPDATE withdrawals 
-                SET status = ?, admin_id = ?, updated_at = ? 
-                WHERE id = ?""",
-                (status, admin_id, datetime.now().isoformat(), withdrawal_id)
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка обновления вывода: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def get_withdrawal(self, withdrawal_id: int) -> Optional[tuple]:
-        """Получить заявку на вывод"""
-        conn = self.get_connection()
-        try:
-            cursor = conn.execute(
-                "SELECT * FROM withdrawals WHERE id = ?", 
-                (withdrawal_id,)
-            )
-            return cursor.fetchone()
-        except Exception as e:
-            print(f"Ошибка получения вывода: {e}")
-            return None
-        finally:
-            conn.close()
-    
-    def get_total_withdrawn(self) -> int:
-        """Получить реальное количество выведенных звезд"""
-        conn = self.get_connection()
-        try:
-            cursor = conn.execute("SELECT total_withdrawn FROM bot_stats WHERE id = 1")
-            result = cursor.fetchone()
-            return result[0] if result else 1900
-        except Exception as e:
-            print(f"Ошибка получения total_withdrawn: {e}")
-            return 1900
-        finally:
-            conn.close()
-    
-    def add_to_total_withdrawn(self, amount: int) -> bool:
-        """Добавить к общему количеству выведенных звезд"""
-        conn = self.get_connection()
-        try:
-            cursor = conn.execute("SELECT total_withdrawn FROM bot_stats WHERE id = 1")
-            current = cursor.fetchone()[0]
-            conn.execute(
-                "UPDATE bot_stats SET total_withdrawn = ? WHERE id = 1",
-                (current + amount,)
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"Ошибка обновления total_withdrawn: {e}")
-            return False
-        finally:
-            conn.close()
-    
-    def get_real_stats(self) -> dict:
-        """Получить реальную статистику (только для админов)"""
-        conn = self.get_connection()
-        try:
-            cursor = conn.execute("SELECT total_users, total_stars, total_withdrawn FROM bot_stats WHERE id = 1")
-            result = cursor.fetchone()
-            if result:
-                return {
-                    "total_users": result[0],
-                    "total_stars": result[1],
-                    "total_withdrawn": result[2]
-                }
-            return {"total_users": 0, "total_stars": 0, "total_withdrawn": 1900}
-        except Exception as e:
-            print(f"Ошибка получения статистики: {e}")
-            return {"total_users": 0, "total_stars": 0, "total_withdrawn": 1900}
-        finally:
-            conn.close()
 
-# ========== ИНИЦИАЛИЗАЦИЯ ==========
-# Устанавливаем минимальный уровень логирования для aiogram
-logging.getLogger("aiogram").setLevel(logging.WARNING)
-logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    # --- Методы Юзера ---
+    def register_user(self, uid, uname, fname, ref_id=None):
+        with self._get_conn() as conn:
+            user = conn.execute("SELECT * FROM users WHERE user_id = ?", (uid,)).fetchone()
+            if not user:
+                now = datetime.now().isoformat()
+                conn.execute(
+                    "INSERT INTO users (user_id, username, first_name, ref_by, reg_date) VALUES (?, ?, ?, ?, ?)",
+                    (uid, uname, fname, ref_id, now)
+                )
+                if ref_id:
+                    conn.execute("UPDATE users SET referrals_count = referrals_count + 1 WHERE user_id = ?", (ref_id,))
+                    self.add_stars(ref_id, REF_BONUS, "referral")
+                conn.commit()
+                return True
+            return False
 
-# Настраиваем наше логирование
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-    ]
-)
-logger = logging.getLogger(__name__)
+    def get_user(self, uid):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT * FROM users WHERE user_id = ?", (uid,)).fetchone()
 
-# Создаем бота с увеличенными таймаутами
-bot = Bot(
-    token=BOT_TOKEN, 
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    session_timeout=60  # Увеличиваем таймаут сессии
-)
+    def add_stars(self, uid, amount, tx_type):
+        with self._get_conn() as conn:
+            conn.execute(
+                "UPDATE users SET stars = stars + ?, total_earned = total_earned + ? WHERE user_id = ?",
+                (amount, amount, uid)
+            )
+            conn.execute(
+                "INSERT INTO logs (user_id, amount, type, timestamp) VALUES (?, ?, ?, ?)",
+                (uid, amount, tx_type, datetime.now().isoformat())
+            )
+            conn.commit()
 
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+    def spend_stars(self, uid, amount, tx_type) -> bool:
+        with self._get_conn() as conn:
+            user = conn.execute("SELECT stars FROM users WHERE user_id = ?", (uid,)).fetchone()
+            if user and user['stars'] >= amount:
+                conn.execute("UPDATE users SET stars = stars - ? WHERE user_id = ?", (amount, uid))
+                conn.execute(
+                    "INSERT INTO logs (user_id, amount, type, timestamp) VALUES (?, ?, ?, ?)",
+                    (uid, -amount, tx_type, datetime.now().isoformat())
+                )
+                conn.commit()
+                return True
+            return False
+
+    # --- Статистика ---
+    def get_global_stats(self):
+        with self._get_conn() as conn:
+            users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            earned = conn.execute("SELECT SUM(total_earned) FROM users").fetchone()[0] or 0
+            withdrawn = conn.execute("SELECT SUM(amount) FROM cashouts WHERE status = 'approved'").fetchone()[0] or 0
+            return {"u": users, "e": earned, "w": withdrawn}
+
 db = Database()
 
-# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
-def get_fake_stats() -> dict:
-    """Получить фейковую статистику для пользователей"""
-    return {
-        "total_users": FAKE_TOTAL_USERS,
-        "total_stars": FAKE_TOTAL_STARS,
-        "total_withdrawn": FAKE_TOTAL_WITHDRAWN
-    }
+# =================================================================
+# MIDDLEWARE (Проверка подписки)
+# =================================================================
+class SubscriptionMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user_id = data['event_from_user'].id
+        if user_id in ADMIN_IDS:
+            return await handler(event, data)
+        
+        try:
+            member = await data['bot'].get_chat_member(CHANNEL_ID, user_id)
+            if member.status in ["left", "kicked"]:
+                raise Exception()
+        except:
+            kb = InlineKeyboardBuilder()
+            kb.row(InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_LINK))
+            kb.row(InlineKeyboardButton(text="🔄 Проверить подписку", callback_data="check_sub"))
+            
+            msg_text = "⚠️ <b>Доступ заблокирован!</b>\n\nЧтобы пользоваться ботом и зарабатывать звезды, подпишись на наш официальный канал."
+            if isinstance(event, Message):
+                await event.answer(msg_text, reply_markup=kb.as_markup())
+            elif isinstance(event, CallbackQuery):
+                await event.answer("Сначала подпишись!", show_alert=True)
+            return
+        
+        return await handler(event, data)
 
-def get_user_stats(user_id: int) -> dict:
-    """Получить статистику пользователя"""
-    user_data = db.get_user(user_id)
-    if not user_data:
-        return {"stars": 0, "referrals": 0, "total_earned": 0, "total_withdrawn": 0}
-    
-    referrals_count = db.get_user_referrals_count(user_id)
-    
-    return {
-        "stars": user_data[4] or 0,
-        "referrals": referrals_count,
-        "total_earned": user_data[6] or 0,
-        "total_withdrawn": user_data[7] or 0
-    }
+# =================================================================
+# ЛОГИКА ОТОБРАЖЕНИЯ (FAKE STATS)
+# =================================================================
+def get_stats_text():
+    real = db.get_global_stats()
+    f_users = real['u'] + FAKE_USERS_BASE
+    f_stars = real['e'] * FAKE_WITHDRAW_MULT + 5000
+    online = random.randint(*FAKE_ONLINE_RANGE)
+    return f"👥 Игроков: {f_users} | 🟢 Онлайн: {online}\n💰 Выплачено: {f_stars} ⭐"
 
-async def check_subscription(user_id: int) -> bool:
-    """Проверить подписку на канал"""
-    try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except Exception as e:
-        logger.error(f"Ошибка проверки подписки: {e}")
-        # Если ошибка, разрешаем доступ, чтобы не блокировать пользователя
-        return True
-
-def generate_stars(count: int) -> str:
-    """Сгенерировать отображение звезд"""
-    if count <= 0:
-        return "☆"
-    full = min(count, 5)
-    stars = "★" * full
-    if count > 5:
-        stars += f" (+{count-5})"
-    return stars
-
-def format_time(seconds: int) -> str:
-    """Форматировать время"""
-    hours = seconds // 3600
-    minutes = (seconds % 3600) // 60
-    return f"{hours}ч {minutes}м"
-
-def censor_username(username: str) -> str:
-    """Скрыть часть username звездочками"""
-    if not username:
-        return "Неизвестный"
-    
-    if username.startswith('@'):
-        username = username[1:]
-    
-    if len(username) <= 4:
-        return f"@{username[:2]}**"
-    
-    visible = username[:4]
-    return f"@{visible}****"
-
-async def ensure_user_registered(user_id: int, username: str = None, 
-                                first_name: str = None, last_name: str = None) -> bool:
-    """Убедиться что пользователь зарегистрирован"""
-    user_data = db.get_user(user_id)
-    if not user_data:
-        # Создаем нового пользователя
-        return db.create_user(user_id, username or "", first_name or "", last_name or "")
-    else:
-        # Обновляем информацию существующего пользователя
-        return db.update_user_info(user_id, username or "", first_name or "", last_name or "")
-
-# ========== КЛАВИАТУРЫ (такие же как в предыдущей версии) ==========
-def main_menu():
-    """Главное меню"""
+def main_menu_kb():
     builder = InlineKeyboardBuilder()
-    builder.row(
-        types.InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
-        types.InlineKeyboardButton(text="🎯 Задания", callback_data="tasks")
-    )
-    builder.row(
-        types.InlineKeyboardButton(text="🎮 Удача", callback_data="luck"),
-        types.InlineKeyboardButton(text="👥 Рефералы", callback_data="referrals")
-    )
-    builder.row(
-        types.InlineKeyboardButton(text="🏆 Топ", callback_data="top"),
-        types.InlineKeyboardButton(text="📅 Ежедневный", callback_data="daily")
-    )
-    builder.row(
-        types.InlineKeyboardButton(text="💎 Вывод", callback_data="withdraw"),
-        types.InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")
-    )
+    builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"), 
+                InlineKeyboardButton(text="🎯 Задания", callback_data="tasks"))
+    builder.row(InlineKeyboardButton(text="🎮 Удача", callback_data="game_luck"), 
+                InlineKeyboardButton(text="👥 Рефералы", callback_data="refs"))
+    builder.row(InlineKeyboardButton(text="🏆 Топ игроков", callback_data="top_stars"), 
+                InlineKeyboardButton(text="📅 Бонус", callback_data="daily_get"))
+    builder.row(InlineKeyboardButton(text="💎 Вывести звезды", callback_data="withdraw_start"))
     return builder.as_markup()
 
-# ... остальные клавиатуры остаются такими же как в предыдущей версии
-# Для экономии места не копирую их все, они работают корректно
+# =================================================================
+# ХЕНДЛЕРЫ
+# =================================================================
+dp = Dispatcher(storage=MemoryStorage())
+dp.message.outer_middleware(SubscriptionMiddleware())
+dp.callback_query.outer_middleware(SubscriptionMiddleware())
 
-# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
-# Обработчики команд остаются ТОЧНО такими же как в предыдущей исправленной версии
-# Они уже исправлены и работают правильно
-
-# ... [все обработчики из предыдущего исправленного кода] ...
-
-# ========== РЕШЕНИЕ ПРОБЛЕМЫ КОНФЛИКТА ==========
-# 1. Убираем Flask (он вызывает конфликты на Render)
-# 2. Используем простой HTTP сервер для keep-alive
-# 3. Добавляем обработку сигналов для чистого завершения
-
-try:
-    import socket
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    import threading
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    uid = message.from_user.id
+    uname = message.from_user.username
+    fname = message.from_user.first_name
     
-    class SimpleHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path == '/':
-                self.send_response(200)
-                self.send_header('Content-type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(b"StarsForQuestion Bot is alive!")
-            elif self.path == '/ping':
-                self.send_response(200)
-                self.send_header('Content-type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(b"pong")
-            elif self.path == '/health':
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(f'{{"status": "ok", "time": "{datetime.now().isoformat()}"}}'.encode())
-            else:
-                self.send_response(404)
-                self.end_headers()
+    # Рефералка
+    ref_id = None
+    args = message.text.split()
+    if len(args) > 1 and args[1].isdigit():
+        potential_ref = int(args[1])
+        if potential_ref != uid:
+            ref_id = potential_ref
+
+    db.register_user(uid, uname, fname, ref_id)
+    
+    await message.answer(
+        f"<b>Привет, {fname}! Добро пожаловать в StarsForQuestion!</b>\n\n"
+        f"Здесь ты можешь выполнять простые задания и получать настоящие звезды Telegram.\n\n"
+        f"📊 {get_stats_text()}",
+        reply_markup=main_menu_kb()
+    )
+
+@dp.callback_query(F.data == "profile")
+async def view_profile(call: CallbackQuery):
+    u = db.get_user(call.from_user.id)
+    # Пофиксили баг отображения: берем данные из БД, а не из объекта call
+    text = (
+        f"<b>👤 Твой профиль:</b>\n"
+        f"──────────────────\n"
+        f"🆔 Твой ID: <code>{u['user_id']}</code>\n"
+        f"⭐ Баланс: <b>{u['stars']} звезд</b>\n"
+        f"👥 Рефералов: {u['referrals_count']}\n"
+        f"💰 Заработано всего: {u['total_earned']}\n"
+        f"──────────────────\n"
+        f"📢 {get_stats_text()}"
+    )
+    await call.message.edit_text(text, reply_markup=main_menu_kb())
+
+@dp.callback_query(F.data == "daily_get")
+async def get_daily(call: CallbackQuery):
+    u = db.get_user(call.from_user.id)
+    now = datetime.now()
+    
+    if u['last_daily']:
+        last = datetime.fromisoformat(u['last_daily'])
+        if now < last + timedelta(days=1):
+            remaining = (last + timedelta(days=1)) - now
+            hours = remaining.seconds // 3600
+            return await call.answer(f"⏳ Бонус будет доступен через {hours}ч.", show_alert=True)
+    
+    reward = random.randint(*DAILY_REWARDS)
+    db.add_stars(u['user_id'], reward, "daily")
+    with db._get_conn() as conn:
+        conn.execute("UPDATE users SET last_daily = ? WHERE user_id = ?", (now.isoformat(), u['user_id']))
+        conn.commit()
         
-        def log_message(self, format, *args):
-            # Отключаем стандартное логирование HTTP сервера
-            pass
-    
-    def run_http_server():
-        """Запуск простого HTTP сервера для keep-alive"""
-        server = HTTPServer(('0.0.0.0', PORT), SimpleHandler)
-        logger.info(f"HTTP сервер запущен на порту {PORT}")
-        server.serve_forever()
-    
-    HAS_HTTP_SERVER = True
-    
-except ImportError:
-    HAS_HTTP_SERVER = False
-    logger.warning("HTTP сервер недоступен")
+    await call.answer(f"🎉 Поздравляем! Ты получил {reward} ⭐", show_alert=True)
+    await view_profile(call)
 
-# ========== ОБРАБОТЧИК СИГНАЛОВ ==========
-def handle_shutdown(signal_name):
-    """Обработка сигналов завершения"""
-    logger.info(f"Получен сигнал {signal_name}, завершаем работу...")
-    # Даем время для завершения операций
-    import time
-    time.sleep(2)
-    sys.exit(0)
+@dp.callback_query(F.data == "game_luck")
+async def game_luck(call: CallbackQuery):
+    u = db.get_user(call.from_user.id)
+    now = datetime.now()
+    
+    if u['last_luck']:
+        last = datetime.fromisoformat(u['last_luck'])
+        if now < last + timedelta(hours=4):
+            return await call.answer("🎮 Играть можно раз в 4 часа!", show_alert=True)
+            
+    reward = random.randint(*LUCK_REWARDS)
+    db.add_stars(u['user_id'], reward, "luck_game")
+    with db._get_conn() as conn:
+        conn.execute("UPDATE users SET last_luck = ? WHERE user_id = ?", (now.isoformat(), u['user_id']))
+        conn.commit()
+    
+    if reward > 0:
+        await call.answer(f"🎰 Удача! Выпало: {reward} ⭐", show_alert=True)
+    else:
+        await call.answer("🎰 Пусто... Попробуй позже!", show_alert=True)
+    await view_profile(call)
 
-# ========== ЗАПУСК БОТА (ИСПРАВЛЕННЫЙ) ==========
-async def main():
-    """Основная функция запуска"""
-    logger.info("=== Запуск StarsForQuestion Bot ===")
+@dp.callback_query(F.data == "withdraw_start")
+async def withdraw_start(call: CallbackQuery):
+    u = db.get_user(call.from_user.id)
+    if u['stars'] < MIN_WITHDRAW:
+        return await call.answer(f"❌ Минимальный вывод: {MIN_WITHDRAW} ⭐. У тебя пока {u['stars']}.", show_alert=True)
     
-    # Регистрируем обработчики сигналов
-    try:
-        import signal as sig
-        sig.signal(sig.SIGINT, lambda s, f: handle_shutdown("SIGINT"))
-        sig.signal(sig.SIGTERM, lambda s, f: handle_shutdown("SIGTERM"))
-    except:
-        pass
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="✅ Подтвердить заявку", callback_data="withdraw_confirm"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile"))
     
-    # Проверяем подключение к боту
-    try:
-        bot_info = await bot.get_me()
-        logger.info(f"Бот запущен: @{bot_info.username}")
-        logger.info(f"ID бота: {bot_info.id}")
-    except Exception as e:
-        logger.error(f"Ошибка подключения к боту: {e}")
+    await call.message.edit_text(
+        f"<b>💎 Оформление вывода</b>\n\n"
+        f"Доступно к выводу: <b>{u['stars']} звезд</b>\n"
+        f"Минималка: {MIN_WITHDRAW}\n\n"
+        f"<i>После подтверждения заявка уйдет админам. Срок обработки: 1-24 часа.</i>",
+        reply_markup=kb.as_markup()
+    )
+
+@dp.callback_query(F.data == "withdraw_confirm")
+async def withdraw_confirm(call: CallbackQuery, bot: Bot):
+    u = db.get_user(call.from_user.id)
+    amount = u['stars']
+    
+    if db.spend_stars(u['user_id'], amount, "withdraw_request"):
+        # Создаем запись в БД
+        with db._get_conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO cashouts (user_id, amount, created_at) VALUES (?, ?, ?)",
+                (u['user_id'], amount, datetime.now().isoformat())
+            )
+            wd_id = cur.lastrowid
+            conn.commit()
+        
+        # Инфо админам
+        admin_kb = InlineKeyboardBuilder()
+        admin_kb.row(InlineKeyboardButton(text="✅ Выплачено", callback_data=f"adm_pay_{wd_id}"))
+        
+        await bot.send_message(
+            WITHDRAWAL_LOG_CHANNEL,
+            f"💰 <b>НОВАЯ ЗАЯВКА #{wd_id}</b>\n"
+            f"Юзер: {call.from_user.full_name} (@{call.from_user.username})\n"
+            f"ID: <code>{u['user_id']}</code>\n"
+            f"Сумма: <b>{amount} звезд</b>",
+            reply_markup=admin_kb.as_markup()
+        )
+        
+        await call.message.edit_text("🚀 <b>Заявка успешно создана!</b>\nАдмины проверят её в ближайшее время.", reply_markup=main_menu_kb())
+    else:
+        await call.answer("Ошибка баланса.")
+
+# =================================================================
+# АДМИН-ПАНЕЛЬ (РЕАЛЬНЫЕ ДАННЫЕ)
+# =================================================================
+@dp.message(Command("admin"))
+async def cmd_admin(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
         return
     
-    # Запускаем HTTP сервер для keep-alive в отдельном потоке
-    if HAS_HTTP_SERVER:
-        http_thread = threading.Thread(target=run_http_server, daemon=True)
-        http_thread.start()
-        logger.info(f"HTTP сервер запущен на порту {PORT} для keep-alive")
-    
-    # Настраиваем polling с правильными параметрами
+    s = db.get_global_stats()
+    text = (
+        f"👑 <b>АДМИН-ПАНЕЛЬ (РЕАЛ)</b>\n"
+        f"──────────────────\n"
+        f"👥 Юзеров в БД: {s['u']}\n"
+        f"⭐ Звезд заработано: {s['e']}\n"
+        f"💸 Выплачено реально: {s['w']}\n"
+        f"──────────────────\n"
+        f"Команды:\n"
+        f"/give [id] [кол-во] - Выдать звезды"
+    )
+    await message.answer(text)
+
+@dp.message(Command("give"))
+async def cmd_give(message: Message):
+    if message.from_user.id not in ADMIN_IDS: return
     try:
-        await dp.start_polling(
-            bot, 
-            skip_updates=True,  # Пропускаем updates, пока бот был оффлайн
-            allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"]
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при polling: {e}")
-        # При ошибке конфликта - просто завершаем работу
-        if "Conflict" in str(e):
-            logger.info("Обнаружен конфликт, завершаем этот инстанс...")
-            return
+        args = message.text.split()
+        target_id = int(args[1])
+        amount = int(args[2])
+        db.add_stars(target_id, amount, "admin_gift")
+        await message.answer(f"✅ Выдано {amount} звезд юзеру {target_id}")
+    except:
+        await message.answer("Ошибка. Юзай: /give ID СУММА")
+
+# =================================================================
+# ЗАПУСК
+# =================================================================
+async def main():
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    logging.basicConfig(level=logging.INFO)
+    print("Бот запущен!")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    # Проверка токена
-    if not BOT_TOKEN or "your_bot_token" in BOT_TOKEN:
-        print("❌ Ошибка: Неправильный токен бота!")
-        print("📝 Получите токен у @BotFather и настройте в Render")
-        sys.exit(1)
-    
-    # Проверяем, не запущен ли уже бот (простая защита)
-    try:
-        import socket
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.bind(('0.0.0.0', PORT))
-        sock.close()
-    except socket.error as e:
-        if "Address already in use" in str(e):
-            print(f"❌ Порт {PORT} уже занят. Возможно, бот уже запущен.")
-            print("📝 Остановите все процессы бота перед запуском.")
-            sys.exit(1)
-    
-    # Запускаем бота
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
-    except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        # При ошибке конфликта выходим без сообщения об ошибке
-        if "Conflict" in str(e):
-            logger.info("Обнаружен конфликт с другим инстансом бота")
-            sys.exit(0)
+    except (KeyboardInterrupt, SystemExit):
+        print("Бот выключен")
+
