@@ -14,17 +14,16 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# 1. КОНФИГУРАЦИЯ
+# --- КОНФИГУРАЦИЯ ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip()]
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002390231804")
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/nft0top")
-WITHDRAWAL_LOG_CHANNEL = os.getenv("WITHDRAWAL_CHANNEL", "-1002390231804")
 
 FAKE_USERS_BASE = 2450  
 FAKE_WITHDRAW_MULT = 12 
 
-# 2. БАЗА ДАННЫХ
+# --- БАЗА ДАННЫХ ---
 class Database:
     def __init__(self):
         self.db_path = "/data/stars.db" if os.path.exists("/data") else "stars.db"
@@ -79,11 +78,11 @@ class Database:
 
 db = Database()
 
-# 3. ИНИЦИАЛИЗАЦИЯ (ВАЖНО: dp создается ДО хендлеров)
+# --- ИНИЦИАЛИЗАЦИЯ ---
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
-# 4. MIDDLEWARE
+# --- MIDDLEWARE ---
 class SubMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         user_id = data['event_from_user'].id
@@ -101,7 +100,7 @@ class SubMiddleware(BaseMiddleware):
 
 dp.update.middleware(SubMiddleware())
 
-# 5. КЛАВИАТУРЫ И ХЕНДЛЕРЫ
+# --- КЛАВИАТУРЫ И ХЕНДЛЕРЫ ---
 def main_kb():
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
@@ -149,29 +148,24 @@ async def daily(call: CallbackQuery):
     await call.answer(f"✅ Получено {reward} ⭐", show_alert=True)
     await profile(call)
 
-@dp.message(Command("admin"))
-async def admin(message: Message):
-    if message.from_user.id not in ADMIN_IDS: return
-    count = db.get_user_count()
-    await message.answer(f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\nРеальных юзеров: {count}")
-
-# 6. ВЕБ-СЕРВЕР ДЛЯ RENDER
+# --- ВЕБ-СЕРВЕР (УБИВАЕТ ОШИБКУ PORT TIMEOUT) ---
 async def handle(request):
     return web.Response(text="Bot is running")
 
-async def run_server():
+async def start_background_tasks():
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    # Render передает порт в переменную PORT
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    logging.info(f"Web server started on port {port}")
 
-# 7. ЗАПУСК
+# --- ЗАПУСК ---
 async def main():
-    asyncio.create_task(run_server())
-    # drop_pending_updates=True лечит ConflictError (скрины 2 и 3)
+    await start_background_tasks() # Запускаем сервер ПЕРЕД ботом
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
@@ -181,4 +175,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-
