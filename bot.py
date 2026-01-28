@@ -14,27 +14,25 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# ========== КОНФИГУРАЦИЯ ИЗ СЕКРЕТОВ ==========
+# 1. КОНФИГУРАЦИЯ
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(i.strip()) for i in os.getenv("ADMIN_IDS", "").split(",") if i.strip()]
-CHANNEL_ID = os.getenv("CHANNEL_ID", "-100...") # ID твоего канала
-CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/your_channel")
-WITHDRAWAL_LOG_CHANNEL = os.getenv("WITHDRAWAL_CHANNEL", "-100...")
+CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002390231804")
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/nft0top")
+WITHDRAWAL_LOG_CHANNEL = os.getenv("WITHDRAWAL_CHANNEL", "-1002390231804")
 
-# Настройки "Красоты" (Fake Stats)
 FAKE_USERS_BASE = 2450  
 FAKE_WITHDRAW_MULT = 12 
 
-# ========== БАЗА ДАННЫХ (ФИКС БАГОВ ПРОФИЛЯ) ==========
+# 2. БАЗА ДАННЫХ
 class Database:
     def __init__(self):
-        # Если используешь Disk на Render, путь должен быть /data/stars.db
         self.db_path = "/data/stars.db" if os.path.exists("/data") else "stars.db"
         self._create_tables()
 
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row # Это лечит баг с перепутанными ID
+        conn.row_factory = sqlite3.Row
         return conn
 
     def _create_tables(self):
@@ -58,6 +56,10 @@ class Database:
         with self._get_conn() as conn:
             return conn.execute("SELECT * FROM users WHERE user_id = ?", (uid,)).fetchone()
 
+    def get_user_count(self):
+        with self._get_conn() as conn:
+            return conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
     def register_user(self, uid, uname, fname, ref_id=None):
         with self._get_conn() as conn:
             user = self.get_user(uid)
@@ -77,7 +79,11 @@ class Database:
 
 db = Database()
 
-# ========== MIDDLEWARE (ПРОВЕРКА ПОДПИСКИ) ==========
+# 3. ИНИЦИАЛИЗАЦИЯ (ВАЖНО: dp создается ДО хендлеров)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
+
+# 4. MIDDLEWARE
 class SubMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         user_id = data['event_from_user'].id
@@ -93,7 +99,9 @@ class SubMiddleware(BaseMiddleware):
             return
         return await handler(event, data)
 
-# ========== ХЕНДЛЕРЫ ==========
+dp.update.middleware(SubMiddleware())
+
+# 5. КЛАВИАТУРЫ И ХЕНДЛЕРЫ
 def main_kb():
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
@@ -103,16 +111,21 @@ def main_kb():
 
 @dp.message(CommandStart())
 async def start(message: Message):
-    ref_id = int(message.text.split()[1]) if len(message.text.split()) > 1 and message.text.split()[1].isdigit() else None
+    args = message.text.split()
+    ref_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
     db.register_user(message.from_user.id, message.from_user.username, message.from_user.first_name, ref_id)
     
     f_users = db.get_user_count() + FAKE_USERS_BASE
-    await message.answer(f"🌟 <b>Добро пожаловать!</b>\n\nИгроков: {f_users}\nВыплачено: {f_users * FAKE_WITHDRAW_MULT} ⭐", reply_markup=main_kb())
+    await message.answer(
+        f"🌟 <b>Привет, {message.from_user.first_name}!</b>\n\n"
+        f"👥 Игроков: <code>{f_users}</code>\n"
+        f"💰 Выплачено: <code>{f_users * FAKE_WITHDRAW_MULT}</code> ⭐", 
+        reply_markup=main_kb()
+    )
 
 @dp.callback_query(F.data == "profile")
 async def profile(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
-    # ТУТ ФИКС: данные берутся строго по ID нажавшего (никаких ботов в профиле)
     text = (
         f"👤 <b>Профиль: {u['first_name']}</b>\n"
         f"🆔 ID: <code>{u['user_id']}</code>\n"
@@ -126,7 +139,7 @@ async def daily(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
     now = datetime.now()
     if u['last_daily'] and datetime.fromisoformat(u['last_daily']) + timedelta(days=1) > now:
-        return await call.answer("❌ Бонус завтра!", show_alert=True)
+        return await call.answer("❌ Бонус будет доступен позже!", show_alert=True)
     
     reward = random.randint(1, 10)
     db.add_stars(u['user_id'], reward)
@@ -136,18 +149,15 @@ async def daily(call: CallbackQuery):
     await call.answer(f"✅ Получено {reward} ⭐", show_alert=True)
     await profile(call)
 
-# ========== АДМИНКА (БЕЗ НАКРУТКИ) ==========
 @dp.message(Command("admin"))
 async def admin(message: Message):
     if message.from_user.id not in ADMIN_IDS: return
-    with db._get_conn() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        total = conn.execute("SELECT SUM(stars) FROM users").fetchone()[0] or 0
-    await message.answer(f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\nРеальных юзеров: {count}\nЗвезд в системе: {total}")
+    count = db.get_user_count()
+    await message.answer(f"⚙️ <b>АДМИН-ПАНЕЛЬ</b>\nРеальных юзеров: {count}")
 
-# ========== ВЕБ-СЕРВЕР ДЛЯ RENDER ==========
+# 6. ВЕБ-СЕРВЕР ДЛЯ RENDER
 async def handle(request):
-    return web.Response(text="Bot is alive")
+    return web.Response(text="Bot is running")
 
 async def run_server():
     app = web.Application()
@@ -158,16 +168,17 @@ async def run_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
+# 7. ЗАПУСК
 async def main():
-    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp.update.middleware(SubMiddleware())
-    
-    asyncio.create_task(run_server()) # Обман порта
-    await bot.delete_webhook(drop_pending_updates=True) # ФИКС ConflictError
+    asyncio.create_task(run_server())
+    # drop_pending_updates=True лечит ConflictError (скрины 2 и 3)
+    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    dp = Dispatcher(storage=MemoryStorage())
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        pass
 
