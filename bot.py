@@ -169,14 +169,27 @@ async def cb_claim_post(call: CallbackQuery):
 @dp.callback_query(F.data == "withdraw")
 async def cb_withdraw(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
-    if u['stars'] < 15: return await call.answer("❌ Минимум 15 звезд!", show_alert=True)
+    if u['stars'] < 15: 
+        return await call.answer("❌ Минимум 15 звезд!", show_alert=True)
+    
     amount = u['stars']
-    with db.get_conn() as conn:
-        conn.execute("UPDATE users SET stars = 0 WHERE user_id = ?", (u['user_id'],))
     try:
-        await bot.send_message(WITHDRAWAL_CHANNEL_ID, f"💰 <b>ВЫВОД</b>\nЮзер: {call.from_user.full_name}\nID: <code>{u['user_id']}</code>\nСумма: {amount:.2f} ⭐")
-        await call.message.answer("✅ Заявка отправлена!")
-    except: await call.answer("⚠ Ошибка канала выплат!", show_alert=True)
+        # Пытаемся отправить сообщение ДО обнуления баланса (для безопасности)
+        await bot.send_message(
+            WITHDRAWAL_CHANNEL_ID, 
+            f"💰 <b>ЗАЯВКА НА ВЫВОД</b>\n\n"
+            f"👤 Юзер: {call.from_user.full_name}\n"
+            f"🆔 ID: <code>{u['user_id']}</code>\n"
+            f"💎 Сумма: <b>{amount:.2f} ⭐</b>"
+        )
+        # Если отправилось — обнуляем баланс в базе
+        with db.get_conn() as conn:
+            conn.execute("UPDATE users SET stars = 0 WHERE user_id = ?", (u['user_id'],))
+        await call.message.answer("✅ Заявка успешно отправлена в канал!")
+    except Exception as e:
+        logging.error(f"Ошибка вывода: {e}") # Это покажет ошибку в логах Render
+        await call.answer(f"⚠ Ошибка: Бот не админ в канале или ID неверный!", show_alert=True)
+
 
 # --- АДМИНКА ---
 @dp.callback_query(F.data == "admin_panel")
