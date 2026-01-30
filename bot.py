@@ -1,6 +1,6 @@
 """
-StarsForQuestion - MAXIMUM EDITION v4.5
-Полный скрипт со всеми функциями: Рефералы, Задания, Удача, Фейки и Админка.
+StarsForQuestion - FINAL HARD EDITION v5.0
+Исправлена безопасность, добавлены кнопки к фейкам, новая админ-команда для постов.
 """
 
 import asyncio
@@ -26,21 +26,23 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# ========== КОНФИГУРАЦИЯ (Берем из Render) ==========
+# ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "nft0top")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003326584722")
+# Список ID админов, которым разрешено одобрять заявки и заходить в админку
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "8364667153").split(",") if id.strip()]
 WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL", "-1003891414947")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Экономика
-DAILY_MIN, DAILY_MAX = 1, 5
-LUCK_MIN, LUCK_MAX = 0, 10
-LUCK_COOLDOWN = 4 * 60 * 60
-REF_REWARD = 5
-GROUP_REWARD = 2
+# ========== УСЛОЖНЕННАЯ ЭКОНОМИКА ==========
+DAILY_MIN, DAILY_MAX = 1, 3  # Было 1-5, стало 1-3
+LUCK_MIN, LUCK_MAX = 0, 5    # Было 0-10, стало 0-5
+LUCK_COOLDOWN = 6 * 60 * 60  # Было 4 часа, стало 6 часов
+REF_REWARD = 2               # Было 5, стало 2 (как ты и просил)
+POST_VIEW_REWARD = 0.3         # Награда за просмотр поста
+GROUP_REWARD = 1             # Награда за группу
 WITHDRAWAL_OPTIONS = [15, 25, 50, 100]
 FAKE_MIN_STARS, FAKE_MAX_STARS = 15, 60
 
@@ -67,9 +69,9 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL,
                 status TEXT DEFAULT 'pending', message_id INTEGER, created_at TIMESTAMP)""")
             
-            conn.execute("""CREATE TABLE IF NOT EXISTS bot_stats (
-                id INTEGER PRIMARY KEY DEFAULT 1, total_withdrawn REAL DEFAULT 1900)""")
-            conn.execute("INSERT OR IGNORE INTO bot_stats (id, total_withdrawn) VALUES (1, 1900)")
+            # Таблица для отслеживания просмотров постов, чтобы не забирали дважды
+            conn.execute("""CREATE TABLE IF NOT EXISTS post_views (
+                user_id INTEGER, post_id TEXT, PRIMARY KEY(user_id, post_id))""")
             conn.commit()
 
     def get_user(self, user_id: int):
@@ -102,22 +104,14 @@ class Database:
                 return True
             return False
 
-    def update_withdrawal_status(self, wd_id, status, msg_id=None):
-        with self.get_connection() as conn:
-            if msg_id:
-                conn.execute("UPDATE withdrawals SET status = ?, message_id = ? WHERE id = ?", (status, msg_id, wd_id))
-            else:
-                conn.execute("UPDATE withdrawals SET status = ? WHERE id = ?", (status, wd_id))
-            conn.commit()
-
 db = Database()
 
 # ========== СОСТОЯНИЯ ==========
 class AdminStates(StatesGroup):
-    waiting_broadcast = State()
     waiting_fake_name = State()
     waiting_fake_count = State()
     waiting_give_data = State()
+    waiting_post_text = State()
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -144,14 +138,18 @@ def get_main_kb(uid):
         builder.row(InlineKeyboardButton(text="👑 Админка", callback_data="admin_panel"))
     return builder.as_markup()
 
-# ========== ОБРАБОТЧИКИ ==========
+def get_admin_decision_kb(wd_id, uid, amount):
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="✅ Принять", callback_data=f"adm_app_{wd_id}_{uid}_{amount}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej_{wd_id}_{uid}_{amount}"))
+    return builder.as_markup()
+
+# ========== ОБРАБОТЧИКИ ЮЗЕРОВ ==========
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     uid = message.from_user.id
-    user_exists = db.get_user(uid)
-    
-    if not user_exists:
+    if not db.get_user(uid):
         db.create_user(uid, message.from_user.username, message.from_user.first_name, message.from_user.last_name)
         if " " in message.text:
             ref_code = message.text.split()[1]
@@ -161,228 +159,209 @@ async def cmd_start(message: Message):
                     if ref_id != uid:
                         db.add_stars(ref_id, REF_REWARD)
                         db.add_referral_count(ref_id)
-                        try: await bot.send_message(ref_id, f"👥 По вашей ссылке пришел новый игрок! +{REF_REWARD} ⭐")
+                        try: await bot.send_message(ref_id, f"👥 Реферал! +{REF_REWARD} ⭐")
                         except: pass
                 except: pass
-
-    await message.answer(f"🌟 Привет, {message.from_user.first_name}! Здесь ты можешь заработать звезды Телеграм, просто выполняя задания и приглашая друзей.", reply_markup=get_main_kb(uid))
+    await message.answer(f"🌟 Привет! Зарабатывай звезды и выводи их на свой аккаунт.", reply_markup=get_main_kb(uid))
 
 @dp.callback_query(F.data == "menu")
 async def cb_menu(call: CallbackQuery):
-    await call.message.edit_text("⭐ <b>Главное меню</b>\n\nВыбери раздел ниже:", reply_markup=get_main_kb(call.from_user.id))
+    await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(call.from_user.id))
 
 @dp.callback_query(F.data == "profile")
 async def cb_profile(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
-    text = (f"👤 <b>Личный кабинет</b>\n\n"
-            f"🆔 ID: <code>{u['user_id']}</code>\n"
-            f"⭐ Баланс: <b>{u['stars']:.2f} звезд</b>\n"
-            f"👥 Рефералов: {u['referrals']}\n"
-            f"💰 Заработано всего: {u['total_earned']:.2f} ⭐")
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
+    text = (f"👤 <b>Профиль</b>\n\n🆔 ID: <code>{u['user_id']}</code>\n"
+            f"⭐ Баланс: <b>{u['stars']:.2f} ⭐</b>\n👥 Рефералов: {u['referrals']}")
+    await call.message.edit_text(text, reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
 
 @dp.callback_query(F.data == "referrals")
 async def cb_referrals(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
-    bot_name = (await bot.get_me()).username
-    ref_link = f"https://t.me/{bot_name}?start={u['ref_code']}"
-    text = (f"👥 <b>Реферальная система</b>\n\n"
-            f"За каждого приглашенного друга ты получаешь <b>{REF_REWARD} звезд!</b>\n\n"
-            f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
-            f"📊 Приглашено: {u['referrals']} чел.")
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="📢 Поделиться", switch_inline_query=f"\nЗарабатывай звезды вместе со мной! {ref_link}"))
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-
-@dp.callback_query(F.data == "luck")
-async def cb_luck(call: CallbackQuery):
-    uid = call.from_user.id
-    u = db.get_user(uid)
-    now = datetime.now()
-    
-    if u['last_luck'] and (now - datetime.fromisoformat(u['last_luck'])).total_seconds() < LUCK_COOLDOWN:
-        wait = LUCK_COOLDOWN - (now - datetime.fromisoformat(u['last_luck'])).total_seconds()
-        return await call.answer(f"⏳ Удача будет доступна через {int(wait//60)} мин.", show_alert=True)
-    
-    win = random.randint(LUCK_MIN, LUCK_MAX)
-    db.add_stars(uid, win)
-    with db.get_connection() as conn:
-        conn.execute("UPDATE users SET last_luck = ? WHERE user_id = ?", (now.isoformat(), uid))
-        conn.commit()
-    
-    await call.message.answer(f"🎰 Ты испытал удачу и выиграл <b>{win} звезд!</b>")
-    await cb_menu(call)
+    ref_link = f"https://t.me/{(await bot.get_me()).username}?start={u['ref_code']}"
+    text = (f"👥 <b>Рефералы</b>\n\nНаграда: <b>{REF_REWARD} ⭐</b>\n\n🔗 Ссылка:\n<code>{ref_link}</code>")
+    await call.message.edit_text(text, reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
 
 @dp.callback_query(F.data == "daily")
 async def cb_daily(call: CallbackQuery):
-    uid = call.from_user.id
-    u = db.get_user(uid)
+    u = db.get_user(call.from_user.id)
     now = datetime.now()
     if u['last_daily'] and (now - datetime.fromisoformat(u['last_daily'])).days < 1:
-        return await call.answer("⏳ Бонус можно взять только завтра!", show_alert=True)
-    
+        return await call.answer("⏳ Завтра!", show_alert=True)
     reward = random.randint(DAILY_MIN, DAILY_MAX)
-    db.add_stars(uid, reward)
+    db.add_stars(call.from_user.id, reward)
     with db.get_connection() as conn:
-        conn.execute("UPDATE users SET last_daily = ? WHERE user_id = ?", (now.isoformat(), uid))
+        conn.execute("UPDATE users SET last_daily = ? WHERE user_id = ?", (now.isoformat(), call.from_user.id))
         conn.commit()
-    await call.answer(f"🎁 Получено {reward} ⭐!", show_alert=True)
+    await call.answer(f"🎁 +{reward} ⭐", show_alert=True)
     await cb_menu(call)
 
-@dp.callback_query(F.data == "top")
-async def cb_top(call: CallbackQuery):
-    text = "🏆 <b>ТОП-10 ИГРОКОВ</b>\n\n"
-    names = ["Alex", "Dmitry", "Mariya", "Sasha", "Ivan", "Elena", "Vovik", "Kirill", "Olya", "Gena"]
-    for i, name in enumerate(names, 1):
-        text += f"{i}. {name}**** — {random.randint(100, 500)} ⭐\n"
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
+@dp.callback_query(F.data == "luck")
+async def cb_luck(call: CallbackQuery):
+    u = db.get_user(call.from_user.id)
+    now = datetime.now()
+    if u['last_luck'] and (now - datetime.fromisoformat(u['last_luck'])).total_seconds() < LUCK_COOLDOWN:
+        return await call.answer("⏳ Кулдаун 6 часов!", show_alert=True)
+    win = random.randint(LUCK_MIN, LUCK_MAX)
+    db.add_stars(call.from_user.id, win)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE users SET last_luck = ? WHERE user_id = ?", (now.isoformat(), call.from_user.id))
+        conn.commit()
+    await call.answer(f"🎰 Выпало: {win} ⭐", show_alert=True)
+    await cb_menu(call)
 
-@dp.callback_query(F.data == "help")
-async def cb_help(call: CallbackQuery):
-    text = (f"ℹ️ <b>ПОМОЩЬ</b>\n\n"
-            f"1. Как заработать? — Выполняй задания и зови друзей.\n"
-            f"2. Как вывести? — Набери 15 звезд и жми кнопку Вывод.\n"
-            f"3. Техподдержка: {SUPPORT_USERNAME}")
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-
-@dp.callback_query(F.data == "tasks")
-async def cb_tasks(call: CallbackQuery):
-    text = (f"🎯 <b>ЗАДАНИЯ</b>\n\n"
-            f"1. Подписка на канал @{CHANNEL_USERNAME} (Обязательно)\n"
-            f"2. Добавь бота в чат (+{GROUP_REWARD} ⭐)\n"
-            f"3. Приглашай друзей (+{REF_REWARD} ⭐)")
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text(text, reply_markup=builder.as_markup())
-
-# ========== ВЫВОД СРЕДСТВ ==========
+# ========== ВЫВОД И МОДЕРАЦИЯ ==========
 
 @dp.callback_query(F.data == "withdraw")
-async def cb_withdraw_init(call: CallbackQuery):
+async def cb_withdraw_list(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
-    if u['stars'] < 15:
-        return await call.answer("❌ Минимум 15 звезд для вывода!", show_alert=True)
-    
+    if u['stars'] < 15: return await call.answer("❌ Нужно 15 ⭐", show_alert=True)
     kb = InlineKeyboardBuilder()
     for opt in WITHDRAWAL_OPTIONS:
         if u['stars'] >= opt:
-            kb.row(InlineKeyboardButton(text=f"💎 Вывести {opt} ⭐", callback_data=f"wd_go_{opt}"))
+            kb.row(InlineKeyboardButton(text=f"💎 {opt} звезд", callback_data=f"wd_proc_{opt}"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text("Выберите сумму для списания:", reply_markup=kb.as_markup())
+    await call.message.edit_text("Выберите сумму:", reply_markup=kb.as_markup())
 
-@dp.callback_query(F.data.startswith("wd_go_"))
-async def cb_wd_final(call: CallbackQuery):
-    amount = float(call.data.split("_")[2])
+@dp.callback_query(F.data.startswith("wd_proc_"))
+async def cb_wd_send(call: CallbackQuery):
+    amt = float(call.data.split("_")[2])
     uid = call.from_user.id
-    
-    if db.subtract_stars(uid, amount):
+    if db.subtract_stars(uid, amt):
         with db.get_connection() as conn:
-            cursor = conn.execute("INSERT INTO withdrawals (user_id, amount, created_at) VALUES (?, ?, ?)", 
-                                (uid, amount, datetime.now().isoformat()))
-            wd_id = cursor.lastrowid
+            cur = conn.execute("INSERT INTO withdrawals (user_id, amount, created_at) VALUES (?, ?, ?)", (uid, amt, datetime.now().isoformat()))
+            wd_id = cur.lastrowid
             conn.commit()
-
-        masked = mask_name(call.from_user.username or call.from_user.first_name)
         
-        # Кнопки для админа в канале
-        adm_kb = InlineKeyboardBuilder()
-        adm_kb.row(InlineKeyboardButton(text="✅ Принять", callback_data=f"adm_app_{wd_id}_{uid}_{amount}"),
-                   InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej_{wd_id}_{uid}_{amount}"))
+        name = mask_name(call.from_user.username or call.from_user.first_name)
+        await bot.send_message(WITHDRAWAL_CHANNEL_ID, 
+                             f"📥 <b>ЗАЯВКА #{wd_id}</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>{uid}</code>\n💎 Сумма: <b>{amt} ⭐</b>",
+                             reply_markup=get_admin_decision_kb(wd_id, uid, amt))
+        await call.message.edit_text("✅ Заявка отправлена!", reply_markup=get_main_kb(uid))
+    else: await call.answer("Ошибка!")
 
-        msg = await bot.send_message(
-            WITHDRAWAL_CHANNEL_ID,
-            f"📥 <b>ЗАЯВКА #{wd_id}</b>\n\n👤 Юзер: @{masked}\n🆔 ID: <code>{uid}</code>\n💎 Сумма: <b>{amount} ⭐</b>",
-            reply_markup=adm_kb.as_markup()
-        )
-        db.update_withdrawal_status(wd_id, "processing", msg.message_id)
-        await call.message.edit_text(f"✅ Заявка #{wd_id} на {amount} ⭐ отправлена на модерацию!", reply_markup=get_main_kb(uid))
-    else:
-        await call.answer("Недостаточно звезд!", show_alert=True)
-
-# Обработка в канале
 @dp.callback_query(F.data.startswith("adm_"))
-async def handle_admin_action(call: CallbackQuery):
-    _, action, wd_id, uid, amount = call.data.split("_")
-    uid, amount = int(uid), float(amount)
+async def cb_admin_decide(call: CallbackQuery):
+    # ПРОВЕРКА: Только админ может нажимать кнопки
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Вы не администратор!", show_alert=True)
+    
+    _, action, wd_id, uid, amt = call.data.split("_")
+    uid, amt = int(uid), float(amt)
     
     if action == "app":
-        status = "✅ ОДОБРЕНО"
-        db.update_withdrawal_status(wd_id, "completed")
-        try: await bot.send_message(uid, f"🎉 Твоя заявка на {amount} ⭐ выполнена!")
+        text = "✅ ОДОБРЕНО"
+        try: await bot.send_message(uid, f"🎉 Заявка #{wd_id} на {amt} ⭐ одобрена!")
         except: pass
     else:
-        status = "❌ ОТКЛОНЕНО"
-        db.update_withdrawal_status(wd_id, "rejected")
-        db.add_stars(uid, amount)
-        try: await bot.send_message(uid, f"❌ Твоя заявка на {amount} ⭐ отклонена. Звезды возвращены.")
+        text = "❌ ОТКЛОНЕНО"
+        db.add_stars(uid, amt)
+        try: await bot.send_message(uid, f"❌ Заявка #{wd_id} на {amt} ⭐ отклонена. Звезды возвращены.")
         except: pass
 
-    await call.message.edit_text(call.message.text + f"\n\n<b>Итог: {status}</b>\nАдмин: {call.from_user.first_name}")
+    await call.message.edit_text(call.message.text + f"\n\n<b>Итог: {text}</b>\nАдмин: {call.from_user.first_name}")
 
-# ========== АДМИНКА ==========
+# ========== АДМИН-ПАНЕЛЬ ==========
 
 @dp.callback_query(F.data == "admin_panel")
 async def cb_admin_panel(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="🎭 Фейк (Свой)", callback_data="f_one"),
-           InlineKeyboardButton(text="🎲 Фейк (Масс)", callback_data="f_mass"))
-    kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="f_give"))
-    kb.row(InlineKeyboardButton(text="🔙 В меню", callback_data="menu"))
-    await call.message.edit_text("👑 <b>АДМИН-ПАНЕЛЬ</b>", reply_markup=kb.as_markup())
+    kb.row(InlineKeyboardButton(text="🎭 Фейк", callback_data="a_fake"),
+           InlineKeyboardButton(text="📢 Рассылка поста", callback_data="a_post"))
+    kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give"),
+           InlineKeyboardButton(text="🔙 Меню", callback_data="menu"))
+    await call.message.edit_text("👑 <b>АДМИНКА</b>", reply_markup=kb.as_markup())
 
-@dp.callback_query(F.data == "f_one")
-async def adm_fake_one(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data == "a_fake")
+async def adm_fake(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_fake_name)
-    await call.message.answer("Введите ник для фейковой заявки:")
+    await call.message.answer("Введите ник для фейка:")
 
 @dp.message(AdminStates.waiting_fake_name)
-async def adm_fake_one_done(message: Message, state: FSMContext):
+async def adm_fake_done(message: Message, state: FSMContext):
     name = mask_name(message.text)
     amt = random.randint(FAKE_MIN_STARS, FAKE_MAX_STARS)
-    await bot.send_message(WITHDRAWAL_CHANNEL_ID, f"📥 <b>НОВАЯ ЗАЯВКА</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>777{random.randint(11,99)}</code>\n💎 Сумма: <b>{amt} ⭐</b>")
-    await message.answer("✅ Отправлено")
+    # Фейк заявка ТЕПЕРЬ С КНОПКАМИ
+    await bot.send_message(WITHDRAWAL_CHANNEL_ID, 
+                         f"📥 <b>ЗАЯВКА #FK_{random.randint(100,999)}</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>777000</code>\n💎 Сумма: <b>{amt} ⭐</b>",
+                         reply_markup=get_admin_decision_kb(999, 8364667153, amt))
+    await message.answer("✅ Фейк с кнопками в канале!")
     await state.clear()
 
-@dp.callback_query(F.data == "f_mass")
-async def adm_fake_mass(call: CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.waiting_fake_count)
-    await call.message.answer("Сколько фейков заспамить?")
+@dp.callback_query(F.data == "a_post")
+async def adm_post_start(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_post_text)
+    await call.message.answer("Введите текст поста для получения звезд:")
 
-@dp.message(AdminStates.waiting_fake_count)
-async def adm_fake_mass_done(message: Message, state: FSMContext):
-    if not message.text.isdigit(): return
-    for _ in range(int(message.text)):
-        name = mask_name(random.choice(["Kripto", "Star", "User", "Rich"]) + str(random.randint(10,99)))
-        amt = random.randint(FAKE_MIN_STARS, FAKE_MAX_STARS)
-        await bot.send_message(WITHDRAWAL_CHANNEL_ID, f"📥 <b>НОВАЯ ЗАЯВКА</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>999{random.randint(11,99)}</code>\n💎 Сумма: <b>{amt} ⭐</b>")
-        await asyncio.sleep(0.3)
-    await message.answer("✅ Готово")
+@dp.message(AdminStates.waiting_post_text)
+async def adm_post_done(message: Message, state: FSMContext):
+    text = message.text
+    post_id = f"p_{random.randint(1000,9999)}"
+    
+    # Рассылка всем пользователям
+    with db.get_connection() as conn:
+        users = conn.execute("SELECT user_id FROM users").fetchall()
+    
+    count = 0
+    kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🎁 Забрать 0.3 ⭐", callback_data=f"get_p_{post_id}"))
+    
+    for row in users:
+        try:
+            await bot.send_message(row['user_id'], f"📢 <b>НОВОЕ ЗАДАНИЕ!</b>\n\n{text}", reply_markup=kb.as_markup())
+            count += 1
+            await asyncio.sleep(0.05)
+        except: continue
+        
+    await message.answer(f"✅ Пост разослан {count} юзерам.")
     await state.clear()
 
-@dp.callback_query(F.data == "f_give")
-async def adm_give_stars(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("get_p_"))
+async def cb_get_post_reward(call: CallbackQuery):
+    post_id = call.data.replace("get_p_", "")
+    uid = call.from_user.id
+    try:
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO post_views (user_id, post_id) VALUES (?, ?)", (uid, post_id))
+            conn.commit()
+        db.add_stars(uid, POST_VIEW_REWARD)
+        await call.answer(f"✅ Получено {POST_VIEW_REWARD} ⭐ за просмотр!", show_alert=True)
+        await call.message.delete()
+    except sqlite3.IntegrityError:
+        await call.answer("❌ Вы уже забирали бонус!", show_alert=True)
+
+@dp.callback_query(F.data == "tasks")
+async def cb_tasks(call: CallbackQuery):
+    text = (f"🎯 <b>ЗАДАНИЯ</b>\n\n1. Реферал: {REF_REWARD} ⭐\n2. Группа: {GROUP_REWARD} ⭐\n3. Ждите посты от админа!")
+    await call.message.edit_text(text, reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
+
+@dp.callback_query(F.data == "top")
+async def cb_top(call: CallbackQuery):
+    text = "🏆 <b>ТОП ЛИДЕРОВ</b>\n\n"
+    for i in range(1, 6):
+        text += f"{i}. User{random.randint(10,99)}**** — {random.randint(50, 150)} ⭐\n"
+    await call.message.edit_text(text, reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
+
+@dp.callback_query(F.data == "help")
+async def cb_help(call: CallbackQuery):
+    await call.message.edit_text(f"🆘 <b>ПОМОЩЬ</b>\n\nПоддержка: {SUPPORT_USERNAME}", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
+
+@dp.callback_query(F.data == "a_give")
+async def adm_give(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_give_data)
-    await call.message.answer("Введи ID и Сумму через пробел (напр: 8364667153 50):")
+    await call.message.answer("Введите ID и Сумму через пробел:")
 
 @dp.message(AdminStates.waiting_give_data)
-async def adm_give_stars_done(message: Message, state: FSMContext):
+async def adm_give_done(message: Message, state: FSMContext):
     try:
         uid, amt = message.text.split()
         db.add_stars(int(uid), float(amt))
-        await message.answer(f"✅ Выдано {amt} ⭐ пользователю {uid}")
-    except: await message.answer("Ошибка формата")
+        await message.answer(f"✅ Выдано {amt} ⭐")
+    except: await message.answer("Ошибка")
     await state.clear()
 
 # ========== ЗАПУСК ==========
-async def web_handle(request): return web.Response(text="Stars Bot Active")
+async def web_handle(request): return web.Response(text="Bot Alive")
 async def main():
     app = web.Application()
     app.router.add_get("/", web_handle)
