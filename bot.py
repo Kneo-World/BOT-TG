@@ -238,6 +238,8 @@ async def cb_wd_execute(call: CallbackQuery):
 
 # ========== АДМИН ПАНЕЛЬ ==========
 
+
+
 @dp.callback_query(F.data == "admin_panel")
 async def cb_admin_panel(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS: return
@@ -247,6 +249,62 @@ async def cb_admin_panel(call: CallbackQuery):
     kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data == "a_give_stars")
+async def adm_give_stars_start(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Нет доступа!", show_alert=True)
+    
+    await state.set_state(AdminStates.waiting_give_data)
+    await call.message.edit_text(
+        "💎 <b>ВЫДАЧА ЗВЕЗД</b>\n\n"
+        "Введите ID пользователя и количество звезд через пробел.\n"
+        "Пример: <code>8364667153 100</code>",
+        reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")).as_markup()
+    )
+
+@dp.message(AdminStates.waiting_give_data)
+async def adm_give_stars_process(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+
+    try:
+        # Разделяем ввод на ID и сумму
+        data = message.text.split()
+        if len(data) != 2:
+            return await message.answer("❌ Ошибка! Введите два числа через пробел: ID и Сумму.")
+        
+        target_id = int(data[0])
+        amount = float(data[1])
+
+        # Проверяем, есть ли такой юзер в базе
+        user = db.get_user(target_id)
+        if not user:
+            return await message.answer(f"❌ Пользователь с ID <code>{target_id}</code> не найден в базе бота!")
+
+        # Добавляем звезды
+        db.add_stars(target_id, amount)
+        
+        # Уведомляем админа
+        await message.answer(
+            f"✅ <b>УСПЕШНО!</b>\n\n"
+            f"Пользователю: <b>{user['first_name']}</b> (<code>{target_id}</code>)\n"
+            f"Начислено: <b>{amount} ⭐</b>",
+            reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")).as_markup()
+        )
+
+        # Пытаемся уведомить пользователя
+        try:
+            await bot.send_message(target_id, f"🎁 Администратор начислил вам <b>{amount} ⭐</b>!")
+        except:
+            pass
+
+        await state.clear()
+
+    except ValueError:
+        await message.answer("❌ Ошибка! Используйте только цифры. Пример: <code>12345678 50</code>")
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка: {e}")
+        await state.clear()
 
 @dp.callback_query(F.data == "a_fake_gen")
 async def adm_fake(call: CallbackQuery):
