@@ -22,7 +22,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002390231804")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "nft0top")
-WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL", "-1002390231804")
+WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL", "-1003891414947")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
 
 # Экономика
