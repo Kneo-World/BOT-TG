@@ -1,15 +1,14 @@
 import asyncio
 import logging
 import os
-import sys
 import sqlite3
 import random
-from datetime import datetime, timedelta
+from datetime import datetime
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.default import DefaultBotProperties
@@ -19,16 +18,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
-CHANNEL_ID = os.getenv("CHANNEL_ID", "-1002390231804")
-CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "nft0top")
-WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL", "-1003891414947")
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
+WITHDRAWAL_CHAT = os.getenv("WITHDRAWAL_CHANNEL", "-1003891414947")
+ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "8364667153").split(",") if id.strip()]
 
-# Экономика
-REF_REWARD = 1.5
-DAILY_MIN, DAILY_MAX = 1, 5
-CLICK_REWARD = 0.03 
+# Настройки фейков (можно менять цифры тут)
+FAKE_MIN_STARS = 15
+FAKE_MAX_STARS = 60
 
 # ========== БАЗА ДАННЫХ ==========
 class Database:
@@ -46,20 +41,12 @@ class Database:
             conn.execute("""CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT,
                 stars REAL DEFAULT 0, referrals INTEGER DEFAULT 0,
-                last_daily TEXT, created_at TEXT)""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS post_clicks (
-                user_id INTEGER, post_id INTEGER, PRIMARY KEY(user_id, post_id))""")
+                created_at TEXT)""")
             conn.commit()
 
     def get_user(self, uid):
         with self.get_conn() as conn:
             return conn.execute("SELECT * FROM users WHERE user_id = ?", (uid,)).fetchone()
-
-    def create_user(self, uid, uname, fname):
-        with self.get_conn() as conn:
-            conn.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, created_at) VALUES (?, ?, ?, ?)",
-                        (uid, uname, fname, datetime.now().isoformat()))
-            conn.commit()
 
     def add_stars(self, uid, amount):
         with self.get_conn() as conn:
@@ -67,203 +54,154 @@ class Database:
             conn.commit()
 
 db = Database()
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+dp = Dispatcher(storage=MemoryStorage())
 
 # ========== СОСТОЯНИЯ ==========
 class AdminStates(StatesGroup):
-    waiting_broadcast = State()
-    waiting_give_data = State() # Для выдачи звезд (ID и сумма)
+    waiting_give_data = State()
+    waiting_fake_name = State()
+    waiting_fake_count = State()
 
-# ========== КЛАВИАТУРЫ ==========
-def main_menu(uid):
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
-                InlineKeyboardButton(text="📅 Бонус", callback_data="daily"))
-    builder.row(InlineKeyboardButton(text="👥 Рефералы", callback_data="referrals"),
-                InlineKeyboardButton(text="🏆 Топ", callback_data="top"))
-    builder.row(InlineKeyboardButton(text="💎 Вывод", callback_data="withdraw"))
-    if uid in ADMIN_IDS:
-        builder.row(InlineKeyboardButton(text="👑 Админка", callback_data="admin_panel"))
-    return builder.as_markup()
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+def mask_name(name):
+    if not name: return "User****"
+    name = name.replace("@", "")
+    if len(name) <= 3: return name + "***"
+    return name[:3] + "***" + name[-1:]
+
+def get_admin_withdraw_kb(user_id, amount):
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="✅ Принять", callback_data=f"adm_wd_app_{user_id}_{amount}"),
+           InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_wd_rej_{user_id}_{amount}"))
+    return kb.as_markup()
 
 # ========== ОБРАБОТЧИКИ ==========
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher(storage=MemoryStorage())
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     uid = message.from_user.id
-    is_new = db.get_user(uid) is None
-    db.create_user(uid, message.from_user.username, message.from_user.first_name)
+    if not db.get_user(uid):
+        with db.get_conn() as conn:
+            conn.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, created_at) VALUES (?, ?, ?, ?)",
+                        (uid, message.from_user.username, message.from_user.first_name, datetime.now().isoformat()))
+            conn.commit()
     
-    args = message.text.split()
-    if is_new and len(args) > 1 and args[1].isdigit():
-        ref_id = int(args[1])
-        if ref_id != uid:
-            db.add_stars(ref_id, REF_REWARD)
-            with db.get_conn() as conn:
-                conn.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id = ?", (ref_id,))
-            try: await bot.send_message(ref_id, f"💎 У вас новый реферал! +{REF_REWARD} ⭐")
-            except: pass
-
-    await message.answer(f"🌟 Привет, {message.from_user.first_name}!\nЗарабатывай звезды и выводи их на баланс.", 
-                         reply_markup=main_menu(uid))
-
-@dp.callback_query(F.data == "profile")
-async def cb_profile(call: CallbackQuery):
-    u = db.get_user(call.from_user.id)
-    text = (f"👤 <b>Ваш профиль:</b>\n\n"
-            f"🆔 ID: <code>{u['user_id']}</code>\n"
-            f"⭐ Баланс: <b>{u['stars']:.2f} звезд</b>\n"
-            f"👥 Рефералов: <b>{u['referrals']}</b>")
-    await call.message.edit_text(text, reply_markup=main_menu(call.from_user.id))
-
-@dp.callback_query(F.data == "referrals")
-async def cb_referrals(call: CallbackQuery):
-    u = db.get_user(call.from_user.id)
-    bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start={u['user_id']}"
-    text = (f"👥 <b>Реферальная система</b>\n\n"
-            f"Приглашай друзей и получай <b>{REF_REWARD} ⭐</b> за каждого!\n\n"
-            f"🔗 Твоя ссылка:\n<code>{ref_link}</code>\n\n"
-            f"Приглашено: <b>{u['referrals']}</b>")
-    await call.message.edit_text(text, reply_markup=main_menu(call.from_user.id))
-
-@dp.callback_query(F.data == "top")
-async def cb_top(call: CallbackQuery):
-    with db.get_conn() as conn:
-        top_users = conn.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10").fetchall()
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
+           InlineKeyboardButton(text="💎 Вывод", callback_data="withdraw"))
+    if uid in ADMIN_IDS:
+        kb.row(InlineKeyboardButton(text="👑 Админка", callback_data="admin_panel"))
     
-    text = "🏆 <b>Топ 10 богатых игроков:</b>\n\n"
-    for i, user in enumerate(top_users, 1):
-        text += f"{i}. {user['first_name']} — <b>{user['stars']:.2f} ⭐</b>\n"
-    
-    await call.message.edit_text(text, reply_markup=main_menu(call.from_user.id))
-
-@dp.callback_query(F.data == "daily")
-async def cb_daily(call: CallbackQuery):
-    u = db.get_user(call.from_user.id)
-    now = datetime.now()
-    if u['last_daily'] and datetime.fromisoformat(u['last_daily']) + timedelta(days=1) > now:
-        return await call.answer("❌ Бонус доступен раз в 24 часа!", show_alert=True)
-    
-    reward = random.randint(DAILY_MIN, DAILY_MAX)
-    db.add_stars(u['user_id'], reward)
-    with db.get_conn() as conn:
-        conn.execute("UPDATE users SET last_daily = ? WHERE user_id = ?", (now.isoformat(), u['user_id']))
-    
-    await call.answer(f"🎉 Вы получили {reward} ⭐!", show_alert=True)
-    await cb_profile(call)
-
-@dp.callback_query(F.data.startswith("claim_"))
-async def cb_claim_post(call: CallbackQuery):
-    post_id = int(call.data.split("_")[1])
-    uid = call.from_user.id
-    with db.get_conn() as conn:
-        check = conn.execute("SELECT 1 FROM post_clicks WHERE user_id = ? AND post_id = ?", (uid, post_id)).fetchone()
-        if check: return await call.answer("❌ Ты уже забирал награду!", show_alert=True)
-        conn.execute("INSERT INTO post_clicks VALUES (?, ?)", (uid, post_id))
-        conn.commit()
-    db.add_stars(uid, CLICK_REWARD)
-    await call.answer(f"✅ Начислено {CLICK_REWARD} ⭐!", show_alert=True)
+    await message.answer(f"🌟 Привет, {message.from_user.first_name}!", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "withdraw")
 async def cb_withdraw(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
+    if u['stars'] < 15:
+        return await call.answer("❌ Минимум 15 звезд!", show_alert=True)
     
-    # 1. Проверка баланса
-    if u['stars'] < 15: 
-        return await call.answer(f"❌ Минимум 15 звезд! У тебя: {u['stars']:.2f}", show_alert=True)
+    amount = round(u['stars'], 2)
+    masked = mask_name(call.from_user.username or call.from_user.first_name)
     
-    amount = u['stars']
-    
-    # 2. Попытка отправки
     try:
         await bot.send_message(
-            WITHDRAWAL_CHANNEL_ID, 
-            f"💰 <b>ЗАЯВКА НА ВЫВОД</b>\n\n"
-            f"👤 Юзер: {call.from_user.full_name}\n"
-            f"🆔 ID: <code>{u['user_id']}</code>\n"
-            f"💎 Сумма: <b>{amount:.2f} ⭐</b>"
+            chat_id=WITHDRAWAL_CHAT,
+            text=f"💰 <b>НОВАЯ ЗАЯВКА</b>\n\n👤 Юзер: @{masked}\n🆔 ID: <code>{u['user_id']}</code>\n💎 Сумма: <b>{amount} ⭐</b>",
+            reply_markup=get_admin_withdraw_kb(u['user_id'], amount)
         )
-        
-        # Обнуляем только если сообщение ушло
         with db.get_conn() as conn:
             conn.execute("UPDATE users SET stars = 0 WHERE user_id = ?", (u['user_id'],))
-        
-        await call.message.answer("✅ Заявка отправлена в канал!")
-        
+            conn.commit()
+        await call.message.answer("✅ Заявка отправлена!")
     except Exception as e:
-        # Если не сработало, бот выдаст ТЕКСТ ошибки прямо в уведомление
-        logging.error(f"Ошибка вывода: {e}")
-        error_text = str(e)
-        if "chat not found" in error_text:
-            msg = "Ошибка: Бот не видит канал. Проверь ID!"
-        elif "admin" in error_text:
-            msg = "Ошибка: Бот не админ в канале!"
-        else:
-            msg = f"Ошибка: {error_text[:50]}" # Первые 50 символов ошибки
-            
-        await call.answer(f"⚠ {msg}", show_alert=True)
+        await call.answer(f"⚠ Ошибка: {e}", show_alert=True)
 
-# --- АДМИНКА ---
+@dp.callback_query(F.data.startswith("adm_wd_"))
+async def handle_admin_decision(call: CallbackQuery):
+    _, _, action, uid, amount = call.data.split("_")
+    if action == "app":
+        status = "✅ ОДОБРЕНО"
+        try: await bot.send_message(uid, f"🎉 Заявка на {amount} ⭐ одобрена!")
+        except: pass
+    else:
+        status = "❌ ОТКЛОНЕНО"
+        db.add_stars(int(uid), float(amount))
+        try: await bot.send_message(uid, f"❌ Заявка на {amount} ⭐ отклонена. Баланс возвращен.")
+        except: pass
+    await call.message.edit_text(call.message.text + f"\n\n<b>Статус: {status}</b>")
+
+# --- НОВАЯ АДМИНКА ---
 @dp.callback_query(F.data == "admin_panel")
 async def cb_admin(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_mail"),
-           InlineKeyboardButton(text="💎 Выдать звезды", callback_data="admin_give"))
-    kb.row(InlineKeyboardButton(text="📮 Пост в канал", callback_data="admin_post_chan"))
+    kb.row(InlineKeyboardButton(text="🎭 Фейк (Свой ник)", callback_data="admin_fake_custom"))
+    kb.row(InlineKeyboardButton(text="🎲 Фейк (Рандом x5)", callback_data="admin_fake_multi"))
+    kb.row(InlineKeyboardButton(text="💎 Выдать звезды", callback_data="admin_give"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="profile"))
-    await call.message.edit_text("👑 <b>Админ-панель</b>", reply_markup=kb.as_markup())
+    await call.message.edit_text("👑 <b>Панель управления</b>", reply_markup=kb.as_markup())
+
+# Логика своего ника для фейка
+@dp.callback_query(F.data == "admin_fake_custom")
+async def fake_custom_step1(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_fake_name)
+    await call.message.answer("Введите ник для фейка (например: MySuperUser):")
+
+@dp.message(AdminStates.waiting_fake_name)
+async def fake_custom_step2(message: Message, state: FSMContext):
+    name = mask_name(message.text)
+    amount = random.randint(FAKE_MIN_STARS, FAKE_MAX_STARS)
+    await bot.send_message(WITHDRAWAL_CHAT, 
+        f"💰 <b>НОВАЯ ЗАЯВКА</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>777{random.randint(1000,9999)}</code>\n💎 Сумма: <b>{amount} ⭐</b>")
+    await message.answer(f"✅ Фейк для {name} отправлен!")
+    await state.clear()
+
+# Логика массовых фейков
+@dp.callback_query(F.data == "admin_fake_multi")
+async def fake_multi_step1(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_fake_count)
+    await call.message.answer("Сколько фейковых заявок отправить за раз?")
+
+@dp.message(AdminStates.waiting_fake_count)
+async def fake_multi_step2(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("Введите число!")
+    
+    count = int(message.text)
+    names = ["Rich", "King", "Star", "Lucky", "Crypto", "Owner", "Best", "TopG"]
+    
+    for _ in range(count):
+        fake_name = mask_name(random.choice(names) + str(random.randint(100, 999)))
+        amount = random.randint(FAKE_MIN_STARS, FAKE_MAX_STARS)
+        await bot.send_message(WITHDRAWAL_CHAT, 
+            f"💰 <b>НОВАЯ ЗАЯВКА</b>\n\n👤 Юзер: @{fake_name}\n🆔 ID: <code>777{random.randint(1000,9999)}</code>\n💎 Сумма: <b>{amount} ⭐</b>")
+        await asyncio.sleep(0.5) # Пауза чтобы ТГ не забанил
+        
+    await message.answer(f"✅ Успешно отправлено {count} фейков!")
+    await state.clear()
 
 @dp.callback_query(F.data == "admin_give")
 async def cb_admin_give(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_give_data)
-    await call.message.answer("Введите ID юзера и количество звезд через пробел\nПример: <code>1234567 100</code>")
+    await call.message.answer("Введите ID и сумму через пробел:")
 
 @dp.message(AdminStates.waiting_give_data)
-async def process_admin_give(message: Message, state: FSMContext):
+async def process_give(message: Message, state: FSMContext):
     try:
-        uid, amount = message.text.split()
-        db.add_stars(int(uid), float(amount))
-        await message.answer(f"✅ Успешно выдано {amount} ⭐ юзеру {uid}")
-    except: await message.answer("❌ Ошибка. Вводите только цифры через пробел.")
+        uid, amt = message.text.split()
+        db.add_stars(int(uid), float(amt))
+        await message.answer("✅ Выдано!")
+    except: await message.answer("❌ Ошибка!")
     await state.clear()
 
-@dp.callback_query(F.data == "admin_post_chan")
-async def cb_admin_post_chan(call: CallbackQuery):
-    pid = random.randint(100, 999)
-    kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💰 Забрать 0.03 ⭐", callback_data=f"claim_{pid}"))
-    await bot.send_message(CHANNEL_ID, "📢 <b>Новый пост!</b>\nНажми кнопку ниже для бонуса.", reply_markup=kb.as_markup())
-    await call.answer("Отправлено!")
-
-@dp.callback_query(F.data == "admin_mail")
-async def cb_admin_mail(call: CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.waiting_broadcast)
-    await call.message.answer("Введите текст рассылки:")
-
-@dp.message(AdminStates.waiting_broadcast)
-async def process_broadcast(message: Message, state: FSMContext):
-    with db.get_conn() as conn:
-        users = conn.execute("SELECT user_id FROM users").fetchall()
-    for row in users:
-        try: 
-            await bot.send_message(row[0], message.text)
-            await asyncio.sleep(0.05)
-        except: pass
-    await message.answer("✅ Готово!")
-    await state.clear()
-
-async def handle(request): return web.Response(text="Bot Live")
+async def handle(request): return web.Response(text="Live")
 async def main():
     app = web.Application(); app.router.add_get("/", handle)
     runner = web.AppRunner(app); await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", 10000))).start()
-    await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     asyncio.run(main())
 
