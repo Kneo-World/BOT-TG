@@ -169,12 +169,15 @@ async def cb_claim_post(call: CallbackQuery):
 @dp.callback_query(F.data == "withdraw")
 async def cb_withdraw(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
+    
+    # 1. Проверка баланса
     if u['stars'] < 15: 
-        return await call.answer("❌ Минимум 15 звезд!", show_alert=True)
+        return await call.answer(f"❌ Минимум 15 звезд! У тебя: {u['stars']:.2f}", show_alert=True)
     
     amount = u['stars']
+    
+    # 2. Попытка отправки
     try:
-        # Пытаемся отправить сообщение ДО обнуления баланса (для безопасности)
         await bot.send_message(
             WITHDRAWAL_CHANNEL_ID, 
             f"💰 <b>ЗАЯВКА НА ВЫВОД</b>\n\n"
@@ -182,14 +185,25 @@ async def cb_withdraw(call: CallbackQuery):
             f"🆔 ID: <code>{u['user_id']}</code>\n"
             f"💎 Сумма: <b>{amount:.2f} ⭐</b>"
         )
-        # Если отправилось — обнуляем баланс в базе
+        
+        # Обнуляем только если сообщение ушло
         with db.get_conn() as conn:
             conn.execute("UPDATE users SET stars = 0 WHERE user_id = ?", (u['user_id'],))
-        await call.message.answer("✅ Заявка успешно отправлена в канал!")
+        
+        await call.message.answer("✅ Заявка отправлена в канал!")
+        
     except Exception as e:
-        logging.error(f"Ошибка вывода: {e}") # Это покажет ошибку в логах Render
-        await call.answer(f"⚠ Ошибка: Бот не админ в канале или ID неверный!", show_alert=True)
-
+        # Если не сработало, бот выдаст ТЕКСТ ошибки прямо в уведомление
+        logging.error(f"Ошибка вывода: {e}")
+        error_text = str(e)
+        if "chat not found" in error_text:
+            msg = "Ошибка: Бот не видит канал. Проверь ID!"
+        elif "admin" in error_text:
+            msg = "Ошибка: Бот не админ в канале!"
+        else:
+            msg = f"Ошибка: {error_text[:50]}" # Первые 50 символов ошибки
+            
+        await call.answer(f"⚠ {msg}", show_alert=True)
 
 # --- АДМИНКА ---
 @dp.callback_query(F.data == "admin_panel")
