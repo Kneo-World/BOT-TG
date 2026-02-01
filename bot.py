@@ -213,12 +213,12 @@ async def cb_luck(call: CallbackQuery):
 
 @dp.callback_query(F.data == "tasks")
 async def cb_tasks(call: CallbackQuery):
-    await call.message.edit_text("🎯 <b>ЗАДАНИЯ</b>\n\n1. Реферал: 2.0 ⭐\n2. Группа: 1.0 ⭐\n3. Посты в канале: 0.3 ⭐", 
+    await call.message.edit_text("🎯 <b>ЗАДАНИЯ</b>\n\n1. Реферал: 5.0 ⭐\n2. Группа: 1.0 ⭐\n3. Посты в канале: 0.3 ⭐", 
                                reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
 
 @dp.callback_query(F.data == "top")
 async def cb_top(call: CallbackQuery):
-    text = "🏆 <b>ТОП-5 ЛИДЕРОВ</b>\n\n1. Kripto**** — 520 ⭐\n2. User01**** — 410 ⭐\n3. Admin**** — 350 ⭐\n4. Lucky**** — 210 ⭐\n5. Star**** — 190 ⭐"
+    text = "🏆 <b>ТОП-5 ЛИДЕРОВ</b>\n\n1. MewMarket**** — 1420 ⭐\n2. Usemd**** — 410 ⭐\n3. Admin**** — 350 ⭐\n4. Lols**** — 210 ⭐\n5. fuful**** — 190 ⭐"
     await call.message.edit_text(text, reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
 
 @dp.callback_query(F.data == "help")
