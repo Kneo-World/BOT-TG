@@ -83,7 +83,9 @@ class Database:
             conn.execute("""CREATE TABLE IF NOT EXISTS promo (
             code TEXT PRIMARY KEY, reward_type TEXT, reward_value TEXT, uses INTEGER)""")
             conn.execute("""CREATE TABLE IF NOT EXISTS inventory (
-            user_id INTEGER, item_name TEXT, quantity INTEGER DEFAULT 1)""")
+            user_id INTEGER, 
+            item_name TEXT, 
+            quantity INTEGER DEFAULT 1)""")
 
     def get_user(self, user_id: int):
         with self.get_connection() as conn:
@@ -540,30 +542,53 @@ async def process_gift_buy(call: CallbackQuery):
     await call.answer(f"✅ Вы купили {item_name}!", show_alert=True)
 
 # --- ИНВЕНТАРЬ (СТРАНИЦЫ И ВЫВОД) ---
-@dp.callback_query(F.data.startswith("inventory_"))
-async def cb_inventory_page(call: CallbackQuery):
-    page = int(call.data.split("_")[1])
+@dp.callback_query(F.data.startswith("inventory")) # Убрал нижнее подчеркивание для универсальности
+async def cb_inventory_logic(call: CallbackQuery):
+    # Определяем страницу
+    if "_" in call.data:
+        page = int(call.data.split("_")[1])
+    else:
+        page = 0
+        
     uid = call.from_user.id
+    
     with db.get_connection() as conn:
         items = conn.execute("SELECT item_name, quantity FROM inventory WHERE user_id = ?", (uid,)).fetchall()
     
+    # Если инвентарь пустой
     if not items:
-        return await call.message.edit_text("🎒 Пусто.", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙", callback_data="menu")).as_markup())
+        kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+        return await call.message.edit_text("🎒 <b>Твой инвентарь пуст.</b>\nКупи что-нибудь в магазине!", reply_markup=kb.as_markup())
 
+    # Логика страниц
     total_pages = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
-    current_items = items[page * ITEMS_PER_PAGE : (page + 1) * ITEMS_PER_PAGE]
+    start_idx = page * ITEMS_PER_PAGE
+    end_idx = start_idx + ITEMS_PER_PAGE
+    current_items = items[start_idx:end_idx]
+    
+    text = f"🎒 <b>ТВОЙ ИНВЕНТАРЬ</b> (Стр. {page+1}/{total_pages})\n\nНажми на предмет, чтобы вывести его:"
     
     kb = InlineKeyboardBuilder()
     for it in current_items:
         kb.row(InlineKeyboardButton(text=f"{it['item_name']} ({it['quantity']} шт.)", callback_data=f"pre_out_{it['item_name']}"))
     
-    if page > 0: kb.add(InlineKeyboardButton(text="⬅️", callback_data=f"inventory_{page-1}"))
-    if page < total_pages - 1: kb.add(InlineKeyboardButton(text="➡️", callback_data=f"inventory_{page+1}"))
-    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text(f"🎒 <b>ИНВЕНТАРЬ</b> (Стр. {page+1})", reply_markup=kb.as_markup())
-
-@dp.callback_query(F.data == "inventory")
-async def cb_inv_start(call: CallbackQuery): await cb_inventory_page(call)
+    # Кнопки навигации
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️", callback_data=f"inventory_{page-1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(text="➡️", callback_data=f"inventory_{page+1}"))
+    
+    if nav_row:
+        kb.row(*nav_row)
+        
+    kb.row(InlineKeyboardButton(text="🔙 Назад в меню", callback_data="menu"))
+    
+    try:
+        await call.message.edit_text(text, reply_markup=kb.as_markup())
+    except Exception:
+        # Если текст сообщения такой же (чтобы не ловить ошибку aiogram)
+        await call.answer()
 
 @dp.callback_query(F.data.startswith("pre_out_"))
 async def cb_pre_out(call: CallbackQuery):
