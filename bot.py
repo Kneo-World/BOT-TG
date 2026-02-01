@@ -79,6 +79,11 @@ class Database:
             conn.execute("""CREATE TABLE IF NOT EXISTS post_claims (
                 user_id INTEGER, post_id TEXT, PRIMARY KEY(user_id, post_id))""")
             conn.commit()
+            conn.execute("ALTER TABLE users ADD COLUMN ref_boost REAL DEFAULT 1.0") # Множитель рефералов 
+            conn.execute("""CREATE TABLE IF NOT EXISTS promo (
+            code TEXT PRIMARY KEY, reward_type TEXT, reward_value TEXT, uses INTEGER)""")
+            conn.execute("""CREATE TABLE IF NOT EXISTS inventory (
+            user_id INTEGER, item_name TEXT, quantity INTEGER DEFAULT 1)""")
 
     def get_user(self, user_id: int):
         with self.get_connection() as conn:
@@ -93,6 +98,12 @@ class Database:
 
     def add_stars(self, user_id, amount):
         with self.get_connection() as conn:
+            # Умножаем на буст только если это НАЧИСЛЕНИЕ (amount > 0)
+            if amount > 0:
+                user = self.get_user(user_id)
+                boost = user['ref_boost'] if user and 'ref_boost' in user.keys() else 1.0
+                amount = float(amount) * boost
+            
             conn.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
             conn.commit()
 
@@ -104,7 +115,11 @@ class AdminStates(StatesGroup):
     waiting_give_data = State()
     waiting_broadcast_msg = State()
     waiting_channel_post = State()
+    waiting_promo_data = State() # Для создания промокода админом
 
+class PromoStates(StatesGroup):
+    waiting_for_code = State() # Для ввода кода юзером
+    
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -127,12 +142,15 @@ def get_main_kb(uid):
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
                 InlineKeyboardButton(text="🎯 Задания", callback_data="tasks"))
+    builder.row(InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"), # Новая
+                InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")) # Вместо вывода
     builder.row(InlineKeyboardButton(text="🎮 Удача", callback_data="luck"),
                 InlineKeyboardButton(text="📅 Бонус", callback_data="daily"))
     builder.row(InlineKeyboardButton(text="👥 Рефералы", callback_data="referrals"),
-                InlineKeyboardButton(text="🏆 Топ", callback_data="top"))
-    builder.row(InlineKeyboardButton(text="💎 Вывод", callback_data="withdraw"),
+                InlineKeyboardButton(text="🎁 Промокод", callback_data="use_promo")) # Новая
+    builder.row(InlineKeyboardButton(text="🏆 Топ", callback_data="top"),
                 InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"))
+    
     if uid in ADMIN_IDS:
         builder.row(InlineKeyboardButton(text="👑 Админка", callback_data="admin_panel"))
     return builder.as_markup()
@@ -164,7 +182,7 @@ async def cmd_start(message: Message):
                         try: await bot.send_message(ref_id, f"👥 Реферал! +{REF_REWARD} ⭐")
                         except: pass
                 except: pass
-    await message.answer(f"🌟 Привет! Зарабатывай звезды и выводи их на свой счет.", reply_markup=get_main_kb(uid))
+    await message.answer(f"🌟 Привет! Зарабатывай звезды и выводи их.", reply_markup=get_main_kb(uid))
 
 @dp.callback_query(F.data == "menu")
 async def cb_menu(call: CallbackQuery):
@@ -260,9 +278,10 @@ async def cb_wd_execute(call: CallbackQuery):
 async def cb_admin_panel(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="📢 Рассылка (ВСЕМ)", callback_data="a_broadcast")) # Новая кнопка
-    kb.row(InlineKeyboardButton(text="📢 Пост в КАНАЛ", callback_data="a_post_chan"))
-    kb.row(InlineKeyboardButton(text="🎭 Фейк Заявка", callback_data="a_fake_gen"))
+    kb.row(InlineKeyboardButton(text="📢 Рассылка", callback_data="a_broadcast"),
+           InlineKeyboardButton(text="🎁 Создать Промо", callback_data="a_create_promo")) # Новая кнопка
+    kb.row(InlineKeyboardButton(text="📢 Пост в КАНАЛ", callback_data="a_post_chan"),
+           InlineKeyboardButton(text="🎭 Фейк Заявка", callback_data="a_fake_gen"))
     kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
@@ -393,6 +412,23 @@ async def adm_give_stars_process(message: Message, state: FSMContext):
         await message.answer(f"❌ Произошла ошибка: {e}")
         await state.clear()
 
+@dp.callback_query(F.data == "a_create_promo")
+async def adm_promo_start(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminStates.waiting_promo_data)
+    await call.message.answer("Введите данные промокода через пробел:\n<code>КОД ТИП ЗНАЧЕНИЕ КОЛ_ВО</code>\n\nПримеры:\n<code>GIFT1 stars 100 10</code> (100 звезд)\n<code>ROZA gift 🌹_Роза 5</code> (5 роз)")
+
+@dp.message(AdminStates.waiting_promo_data)
+async def adm_promo_save(message: Message, state: FSMContext):
+    try:
+        code, r_type, val, uses = message.text.split()
+        with db.get_connection() as conn:
+            conn.execute("INSERT INTO promo VALUES (?, ?, ?, ?)", (code, r_type, val, int(uses)))
+            conn.commit()
+        await message.answer(f"✅ Промокод <code>{code}</code> создан на {uses} использований!")
+        await state.clear()
+    except Exception as e:
+        await message.answer("❌ Ошибка! Формат: <code>КОД ТИП ЗНАЧЕНИЕ КОЛ_ВО</code>")
+
 @dp.callback_query(F.data == "a_fake_gen")
 async def adm_fake(call: CallbackQuery):
     name, fid, amt = mask_name(generate_fake_user()), generate_fake_id(), random.choice(WITHDRAWAL_OPTIONS)
@@ -446,6 +482,146 @@ async def cb_adm_action(call: CallbackQuery):
         if uid != 0: db.add_stars(uid, amt); await bot.send_message(uid, f"❌ Отклонено. {amt} ⭐ возвращены.")
         res = "❌ ОТКЛОНЕНО"
     await call.message.edit_text(call.message.text + f"\n\n<b>Итог: {res}</b>")
+
+# --- ЦЕНЫ (УВЕЛИЧЕНЫ В 3 РАЗА) ---
+GIFTS_PRICES = {
+    "🧸 Мишка": 45, "❤️ Сердце": 45,
+    "🎁 Подарок": 75, "🌹 Роза": 75,
+    "🍰 Тортик": 150, "💐 Букет": 150, "🚀 Ракета": 150, "🍾 Шампанское": 150,
+    "🏆 Кубок": 300, "💍 Колечко": 300, "💎 Алмаз": 300
+}
+ITEMS_PER_PAGE = 5
+
+# --- МАГАЗИН ---
+@dp.callback_query(F.data == "shop")
+async def cb_shop_menu(call: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="⚡ Буст рефералов +0.1 (50 ⭐)", callback_data="buy_boost_01"))
+    for item, price in GIFTS_PRICES.items():
+        kb.add(InlineKeyboardButton(text=f"{item} {price}⭐", callback_data=f"buy_g_{item}"))
+    kb.adjust(1, 2)
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text("✨ <b>МАГАЗИН</b>", reply_markup=kb.as_markup())
+
+# --- ПОКУПКА БУСТА ---
+@dp.callback_query(F.data == "buy_boost_01")
+async def buy_boost(call: CallbackQuery):
+    uid = call.from_user.id
+    user = db.get_user(uid)
+    if user['stars'] < 50: return await call.answer("❌ Нужно 50 ⭐", show_alert=True)
+    
+    db.add_stars(uid, -50)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE users SET ref_boost = ref_boost + 0.1 WHERE user_id = ?", (uid,))
+        conn.commit()
+    await call.answer("🚀 Буст успешно куплен! Теперь ты получаешь больше.", show_alert=True)
+
+@dp.callback_query(F.data.startswith("buy_g_"))
+async def process_gift_buy(call: CallbackQuery):
+    item_name = call.data.replace("buy_g_", "")
+    price = GIFTS_PRICES.get(item_name)
+    uid = call.from_user.id
+    user = db.get_user(uid)
+
+    if user['stars'] < price:
+        return await call.answer(f"❌ Недостаточно звезд! Нужно {price} ⭐", show_alert=True)
+
+    # Списываем (отрицательное число, буст не сработает)
+    db.add_stars(uid, -price)
+    
+    with db.get_connection() as conn:
+        existing = conn.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item_name)).fetchone()
+        if existing:
+            conn.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (uid, item_name))
+        else:
+            conn.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (uid, item_name))
+        conn.commit()
+
+    await call.answer(f"✅ Вы купили {item_name}!", show_alert=True)
+
+# --- ИНВЕНТАРЬ (СТРАНИЦЫ И ВЫВОД) ---
+@dp.callback_query(F.data.startswith("inventory_"))
+async def cb_inventory_page(call: CallbackQuery):
+    page = int(call.data.split("_")[1])
+    uid = call.from_user.id
+    with db.get_connection() as conn:
+        items = conn.execute("SELECT item_name, quantity FROM inventory WHERE user_id = ?", (uid,)).fetchall()
+    
+    if not items:
+        return await call.message.edit_text("🎒 Пусто.", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙", callback_data="menu")).as_markup())
+
+    total_pages = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
+    current_items = items[page * ITEMS_PER_PAGE : (page + 1) * ITEMS_PER_PAGE]
+    
+    kb = InlineKeyboardBuilder()
+    for it in current_items:
+        kb.row(InlineKeyboardButton(text=f"{it['item_name']} ({it['quantity']} шт.)", callback_data=f"pre_out_{it['item_name']}"))
+    
+    if page > 0: kb.add(InlineKeyboardButton(text="⬅️", callback_data=f"inventory_{page-1}"))
+    if page < total_pages - 1: kb.add(InlineKeyboardButton(text="➡️", callback_data=f"inventory_{page+1}"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text(f"🎒 <b>ИНВЕНТАРЬ</b> (Стр. {page+1})", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data == "inventory")
+async def cb_inv_start(call: CallbackQuery): await cb_inventory_page(call)
+
+@dp.callback_query(F.data.startswith("pre_out_"))
+async def cb_pre_out(call: CallbackQuery):
+    item = call.data.replace("pre_out_", "")
+    kb = InlineKeyboardBuilder().row(
+        InlineKeyboardButton(text="✅ Да, вывести", callback_data=f"confirm_out_{item}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="inventory_0")
+    )
+    await call.message.edit_text(f"❓ Хотите вывести <b>{item}</b>?", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("confirm_out_"))
+async def cb_final_out(call: CallbackQuery):
+    item = call.data.replace("confirm_out_", "")
+    uid = call.from_user.id
+    username = call.from_user.username or "NoName"
+
+    with db.get_connection() as conn:
+        res = conn.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item)).fetchone()
+        if not res or res['quantity'] <= 0:
+            return await call.answer("❌ Предмет не найден!", show_alert=True)
+        
+        if res['quantity'] > 1:
+            conn.execute("UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?", (uid, item))
+        else:
+            conn.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item))
+        conn.commit()
+
+    # Уведомление в канал выплат
+    await bot.send_message(WITHDRAWAL_CHANNEL_ID, 
+        f"📦 <b>ЗАЯВКА НА ВЫВОД ПРЕДМЕТА</b>\n\n👤 Юзер: @{username}\n🆔 ID: <code>{uid}</code>\n🎁 Предмет: <b>{item}</b>")
+
+    await call.message.edit_text(f"🚀 Заявка на вывод <b>{item}</b> отправлена! Админ свяжется с вами.", reply_markup=get_main_kb(uid))
+
+# --- ПРОМОКОДЫ ---
+@dp.callback_query(F.data == "use_promo")
+async def promo_start(call: CallbackQuery, state: FSMContext):
+    await state.set_state(PromoStates.waiting_for_code)
+    await call.message.answer("⌨️ Введите промокод:")
+
+@dp.message(PromoStates.waiting_for_code)
+async def promo_process(message: Message, state: FSMContext):
+    code = message.text
+    with db.get_connection() as conn:
+        p = conn.execute("SELECT * FROM promo WHERE code = ? AND uses > 0", (code,)).fetchone()
+        if p:
+            conn.execute("UPDATE promo SET uses = uses - 1 WHERE code = ?", (code,))
+            conn.commit()
+            if p['reward_type'] == 'stars':
+                db.add_stars(message.from_user.id, float(p['reward_value']))
+                await message.answer(f"✅ Активировано! +{p['reward_value']} ⭐")
+            else: # Если это подарок (например 🌹_Роза)
+                item = p['reward_value']
+                conn.execute("INSERT INTO inventory (user_id, item_name) VALUES (?, ?)", (message.from_user.id, item))
+                conn.commit()
+                await message.answer(f"✅ Активировано! Получен подарок: {item}")
+        else:
+            await message.answer("❌ Код неверный или закончился.")
+    await state.clear()
 
 # ========== ЗАПУСК ==========
 async def web_handle(request): return web.Response(text="Bot Active")
