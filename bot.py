@@ -244,11 +244,63 @@ async def cb_wd_execute(call: CallbackQuery):
 async def cb_admin_panel(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS: return
     kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📢 Рассылка (ВСЕМ)", callback_data="a_broadcast")) # Новая кнопка
     kb.row(InlineKeyboardButton(text="📢 Пост в КАНАЛ", callback_data="a_post_chan"))
     kb.row(InlineKeyboardButton(text="🎭 Фейк Заявка", callback_data="a_fake_gen"))
     kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
+
+# 1. Вход в режим рассылки
+@dp.callback_query(F.data == "a_broadcast")
+async def adm_broadcast_start(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return await call.answer("❌ Нет доступа!", show_alert=True)
+    
+    await state.set_state(AdminStates.waiting_broadcast_msg)
+    await call.message.edit_text(
+        "📢 <b>РАССЫЛКА ПОЛЬЗОВАТЕЛЯМ</b>\n\n"
+        "Отправьте сообщение (текст, фото, видео), которое хотите разослать всем.",
+        reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")).as_markup()
+    )
+
+# 2. Обработка введенного сообщения
+@dp.message(AdminStates.waiting_broadcast_msg)
+async def adm_broadcast_confirm(message: types.Message, state: FSMContext):
+    # Сохраняем ID сообщения и чата, чтобы потом его скопировать
+    await state.update_data(broadcast_msg_id=message.message_id, broadcast_chat_id=message.chat.id)
+    
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🚀 НАЧАТЬ", callback_data="confirm_broadcast_send"))
+    kb.row(InlineKeyboardButton(text="❌ ОТМЕНА", callback_data="admin_panel"))
+    
+    await message.answer("👆 <b>Это превью сообщения.</b>\nНачать рассылку для всех пользователей?", 
+                         reply_markup=kb.as_markup())
+
+# 3. Финальная отправка
+@dp.callback_query(F.data == "confirm_broadcast_send")
+async def adm_broadcast_run(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    msg_id = data.get("broadcast_msg_id")
+    from_chat = data.get("broadcast_chat_id")
+    await state.clear()
+
+    count = 0
+    err = 0
+    await call.message.edit_text("⏳ <i>Рассылка выполняется...</i>")
+
+    # ВАЖНО: Тут должен быть твой список ID пользователей из базы данных
+    # Если базы нет, для теста: users = [call.from_user.id]
+    for user_id in users_db: 
+        try:
+            await bot.copy_message(chat_id=user_id, from_chat_id=from_chat, message_id=msg_id)
+            count += 1
+            await asyncio.sleep(0.05) # Защита от спам-фильтра
+        except Exception:
+            err += 1
+
+    await call.message.answer(f"✅ <b>Рассылка завершена!</b>\n\n📊 Успешно: {count}\n🚫 Заблокировали бота: {err}")
+
 
 @dp.callback_query(F.data == "a_give_stars")
 async def adm_give_stars_start(call: CallbackQuery, state: FSMContext):
