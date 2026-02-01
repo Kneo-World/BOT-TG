@@ -164,8 +164,11 @@ def get_main_kb(uid):
 
 def get_admin_decision_kb(uid, amount):
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="✅ Принять", callback_data=f"adm_app_{uid}_{amount}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej_{uid}_{amount}"))
+    # uid — ID юзера, amount — сумма или строка "GIFT"
+    builder.row(
+        InlineKeyboardButton(text="✅ Принять", callback_data=f"adm_app_{uid}_{amount}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej_{uid}_{amount}")
+    )
     builder.row(InlineKeyboardButton(text="✉️ Написать в ЛС", callback_data=f"adm_chat_{uid}"))
     return builder.as_markup()
 
@@ -479,28 +482,45 @@ async def cb_adm_chat(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
 async def cb_adm_action(call: CallbackQuery):
-    if call.from_user.id not in ADMIN_IDS: return await call.answer("❌ Не админ!")
+    # Проверка, что нажал именно админ из списка
+    if call.from_user.id not in ADMIN_IDS: 
+        return await call.answer("❌ Вы не являетесь администратором!", show_alert=True)
     
-    d = call.data.split("_")
-    act = d[1] # app или rej
-    uid = int(d[2])
-    raw_amt = d[3] # Тут может быть число или слово "GIFT"
+    try:
+        # Разбираем данные: adm, действие (app/rej), ID юзера, значение (число или GIFT)
+        data_parts = call.data.split("_")
+        action = data_parts[1]
+        target_uid = int(data_parts[2])
+        value = data_parts[3] # Это либо сумма "50", либо "GIFT"
 
-    if act == "app":
-        if uid != 0:
-            msg = f"🎉 Ваша заявка на вывод {'подарка' if raw_amt == 'GIFT' else raw_amt + ' ⭐'} одобрена!"
-            await bot.send_message(uid, msg)
-        res = "✅ ПРИНЯТО"
-    else:
-        # Если отклонили и это были звезды — возвращаем их на баланс
-        if uid != 0 and raw_amt != "GIFT":
-            db.add_stars(uid, float(raw_amt))
-            await bot.send_message(uid, f"❌ Выплата {raw_amt} ⭐ отклонена. Звезды вернулись на баланс.")
-        elif uid != 0 and raw_amt == "GIFT":
-            await bot.send_message(uid, "❌ Вывод подарка отклонен администратором. Свяжитесь с поддержкой.")
-        res = "❌ ОТКЛОНЕНО"
+        if action == "app":
+            # ЛОГИКА ОДОБРЕНИЯ
+            if target_uid != 0:
+                reward_text = "подарка" if value == "GIFT" else f"{value} ⭐"
+                await bot.send_message(target_uid, f"🎉 <b>Ваша заявка на вывод {reward_text} одобрена!</b>")
+            status_text = "✅ ПРИНЯТО"
+        
+        else:
+            # ЛОГИКА ОТКЛОНЕНИЯ
+            if target_uid != 0:
+                if value == "GIFT":
+                    # Если подарок — просто пишем, что отклонено
+                    await bot.send_message(target_uid, "❌ <b>Заявка на вывод подарка отклонена.</b>\nСвяжитесь с поддержкой для уточнения деталей.")
+                else:
+                    # Если звезды — возвращаем их на баланс
+                    db.add_stars(target_uid, float(value))
+                    await bot.send_message(target_uid, f"❌ <b>Выплата {value} ⭐ отклонена.</b>\nЗвезды возвращены на ваш баланс.")
+            status_text = "❌ ОТКЛОНЕНО"
 
-    await call.message.edit_text(call.message.text + f"\n\n<b>Итог: {res}</b>")
+        # Обновляем сообщение в канале админа, чтобы кнопка исчезла и появился итог
+        await call.message.edit_text(
+            f"{call.message.text}\n\n<b>Итог: {status_text}</b> (Админ: @{call.from_user.username or 'ID ' + str(call.from_user.id)})"
+        )
+        await call.answer("Готово!")
+
+    except Exception as e:
+        logging.error(f"Ошибка в админ-действии: {e}")
+        await call.answer("❌ Произошла ошибка при обработке", show_alert=True)
     
 # --- ЦЕНЫ (УВЕЛИЧЕНЫ В 3 РАЗА) ---
 GIFTS_PRICES = {
