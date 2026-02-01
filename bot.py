@@ -8,6 +8,19 @@ import asyncio
 import logging
 import os
 import sqlite3
+
+# Создаем подключение к базе данных
+db = sqlite3.connect("users.db", check_same_thread=False)
+cursor = db.cursor()
+
+# Создаем таблицу, если её нет
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY
+)
+""")
+db.commit()
+
 import random
 import string
 from datetime import datetime, timedelta
@@ -280,7 +293,7 @@ async def adm_broadcast_confirm(message: types.Message, state: FSMContext):
     await message.answer("👆 <b>Это превью сообщения.</b>\nНачать рассылку для всех пользователей?", 
                          reply_markup=kb.as_markup())
 
-# 3. Финальная отправка
+# 3. Финальная отправка (ИСПРАВЛЕННАЯ)
 @dp.callback_query(F.data == "confirm_broadcast_send")
 async def adm_broadcast_run(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -288,22 +301,41 @@ async def adm_broadcast_run(call: CallbackQuery, state: FSMContext):
     from_chat = data.get("broadcast_chat_id")
     await state.clear()
 
+    # Достаем ВСЕХ пользователей из твоей настоящей базы данных
+    try:
+        with db.get_connection() as conn:
+            # Выбираем все ID из таблицы users
+            rows = conn.execute("SELECT user_id FROM users").fetchall()
+            users_list = [row['user_id'] for row in rows]
+    except Exception as e:
+        return await call.message.answer(f"❌ Ошибка базы данных: {e}")
+
+    if not users_list:
+        return await call.message.answer("❌ В базе данных еще нет пользователей для рассылки.")
+
     count = 0
     err = 0
-    await call.message.edit_text("⏳ <i>Рассылка выполняется...</i>")
+    await call.message.edit_text(f"⏳ Рассылка запущена для {len(users_list)} чел...")
 
-    # ВАЖНО: Тут должен быть твой список ID пользователей из базы данных
-    # Если базы нет, для теста: users = [call.from_user.id]
-    for user_id in users_db: 
+    for user_id in users_list: 
         try:
-            await bot.copy_message(chat_id=user_id, from_chat_id=from_chat, message_id=msg_id)
+            # Копируем сообщение (текст, фото, видео и т.д.)
+            await bot.copy_message(
+                chat_id=user_id, 
+                from_chat_id=from_chat, 
+                message_id=msg_id
+            )
             count += 1
-            await asyncio.sleep(0.05) # Защита от спам-фильтра
+            # Задержка 0.05 сек, чтобы не получить бан от Telegram за спам
+            await asyncio.sleep(0.05) 
         except Exception:
             err += 1
 
-    await call.message.answer(f"✅ <b>Рассылка завершена!</b>\n\n📊 Успешно: {count}\n🚫 Заблокировали бота: {err}")
-
+    await call.message.answer(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📊 Успешно: {count}\n"
+        f"🚫 Ошибок (бан бота): {err}"
+    )
 
 @dp.callback_query(F.data == "a_give_stars")
 async def adm_give_stars_start(call: CallbackQuery, state: FSMContext):
