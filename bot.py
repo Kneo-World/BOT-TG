@@ -34,7 +34,7 @@ SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
 PORT = int(os.environ.get("PORT", 10000))
 
 # Экономика
-REF_REWARD = 2.0  
+REF_REWARD = 5.0  
 VIEW_REWARD = 0.3 
 DAILY_MIN, DAILY_MAX = 1, 3
 LUCK_MIN, LUCK_MAX = 0, 5
@@ -87,6 +87,7 @@ db = Database()
 class AdminStates(StatesGroup):
     waiting_fake_name = State()
     waiting_give_data = State()
+    waiting_broadcast_msg = State()
     waiting_channel_post = State()
 
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
