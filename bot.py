@@ -43,7 +43,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 users_db = set() # Это временная база данных в оперативной памяти
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003326584722") 
-ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "8364667153").split(",") if id.strip()]
+raw_admins = os.getenv("ADMIN_IDS", "8364667153")
+ADMIN_IDS = [int(id.strip()) for id in raw_admins.split(",") if id.strip()]
 WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL", "-1003891414947") 
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
 PORT = int(os.environ.get("PORT", 10000))
