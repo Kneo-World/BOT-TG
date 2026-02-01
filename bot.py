@@ -69,6 +69,10 @@ class Database:
 
     def init_db(self):
         with self.get_connection() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS promo_history (
+            user_id INTEGER, 
+            code TEXT, 
+            PRIMARY KEY(user_id, code))""")
             conn.execute("""CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, 
                 stars REAL DEFAULT 0, referrals INTEGER DEFAULT 0, 
@@ -475,16 +479,28 @@ async def cb_adm_chat(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
 async def cb_adm_action(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS: return await call.answer("❌ Не админ!")
+    
     d = call.data.split("_")
-    act, uid, amt = d[1], int(d[2]), float(d[3])
-    if act == "app":
-        if uid != 0: await bot.send_message(uid, f"🎉 Выплата {amt} ⭐ одобрена!")
-        res = "✅ ВЫПЛАЧЕНО"
-    else:
-        if uid != 0: db.add_stars(uid, amt); await bot.send_message(uid, f"❌ Отклонено. {amt} ⭐ возвращены.")
-        res = "❌ ОТКЛОНЕНО"
-    await call.message.edit_text(call.message.text + f"\n\n<b>Итог: {res}</b>")
+    act = d[1] # app или rej
+    uid = int(d[2])
+    raw_amt = d[3] # Тут может быть число или слово "GIFT"
 
+    if act == "app":
+        if uid != 0:
+            msg = f"🎉 Ваша заявка на вывод {'подарка' if raw_amt == 'GIFT' else raw_amt + ' ⭐'} одобрена!"
+            await bot.send_message(uid, msg)
+        res = "✅ ПРИНЯТО"
+    else:
+        # Если отклонили и это были звезды — возвращаем их на баланс
+        if uid != 0 and raw_amt != "GIFT":
+            db.add_stars(uid, float(raw_amt))
+            await bot.send_message(uid, f"❌ Выплата {raw_amt} ⭐ отклонена. Звезды вернулись на баланс.")
+        elif uid != 0 and raw_amt == "GIFT":
+            await bot.send_message(uid, "❌ Вывод подарка отклонен администратором. Свяжитесь с поддержкой.")
+        res = "❌ ОТКЛОНЕНО"
+
+    await call.message.edit_text(call.message.text + f"\n\n<b>Итог: {res}</b>")
+    
 # --- ЦЕНЫ (УВЕЛИЧЕНЫ В 3 РАЗА) ---
 GIFTS_PRICES = {
     "🧸 Мишка": 45, "❤️ Сердце": 45,
@@ -603,25 +619,37 @@ async def cb_pre_out(call: CallbackQuery):
 async def cb_final_out(call: CallbackQuery):
     item = call.data.replace("confirm_out_", "")
     uid = call.from_user.id
-    username = call.from_user.username or "NoName"
+    username = call.from_user.username or "User"
+    name_masked = mask_name(call.from_user.first_name)
 
     with db.get_connection() as conn:
         res = conn.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item)).fetchone()
         if not res or res['quantity'] <= 0:
             return await call.answer("❌ Предмет не найден!", show_alert=True)
         
+        # Удаляем 1 штуку из инвентаря
         if res['quantity'] > 1:
             conn.execute("UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?", (uid, item))
         else:
             conn.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item))
         conn.commit()
 
-    # Уведомление в канал выплат
-    await bot.send_message(WITHDRAWAL_CHANNEL_ID, 
-        f"📦 <b>ЗАЯВКА НА ВЫВОД ПРЕДМЕТА</b>\n\n👤 Юзер: @{username}\n🆔 ID: <code>{uid}</code>\n🎁 Предмет: <b>{item}</b>")
+    # ОТПРАВКА АДМИНУ (в стиле старого вывода)
+    # Используем твою функцию get_admin_decision_kb
+    # Передаем "GIFT" вместо суммы, чтобы админ-скрипт понимал, что это предмет
+    await bot.send_message(
+        WITHDRAWAL_CHANNEL_ID, 
+        f"🎁 <b>ЗАЯВКА НА ВЫВОД ПРЕДМЕТА</b>\n\n"
+        f"👤 Юзер: @{username}\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"📦 Предмет: <b>{item}</b>",
+        reply_markup=get_admin_decision_kb(uid, "GIFT") 
+    )
 
-    await call.message.edit_text(f"🚀 Заявка на вывод <b>{item}</b> отправлена! Админ свяжется с вами.", reply_markup=get_main_kb(uid))
-
+    await call.message.edit_text(
+        f"✅ Заявка на вывод <b>{item}</b> отправлена!\nОжидайте сообщения от администратора.", 
+        reply_markup=get_main_kb(uid)
+    )
 # --- ПРОМОКОДЫ ---
 @dp.callback_query(F.data == "use_promo")
 async def promo_start(call: CallbackQuery, state: FSMContext):
@@ -630,22 +658,46 @@ async def promo_start(call: CallbackQuery, state: FSMContext):
 
 @dp.message(PromoStates.waiting_for_code)
 async def promo_process(message: Message, state: FSMContext):
-    code = message.text
+    code = message.text.strip()
+    uid = message.from_user.id
+    
     with db.get_connection() as conn:
+        # 1. Проверяем, не вводил ли юзер этот код уже
+        already_used = conn.execute(
+            "SELECT 1 FROM promo_history WHERE user_id = ? AND code = ?", 
+            (uid, code)
+        ).fetchone()
+        
+        if already_used:
+            await state.clear()
+            return await message.answer("❌ Вы уже активировали этот промокод!")
+
+        # 2. Проверяем существование кода и наличие лимита
         p = conn.execute("SELECT * FROM promo WHERE code = ? AND uses > 0", (code,)).fetchone()
+        
         if p:
+            # Списываем 1 общее использование
             conn.execute("UPDATE promo SET uses = uses - 1 WHERE code = ?", (code,))
+            # Записываем, что этот юзер его использовал
+            conn.execute("INSERT INTO promo_history (user_id, code) VALUES (?, ?)", (uid, code))
             conn.commit()
+            
             if p['reward_type'] == 'stars':
-                db.add_stars(message.from_user.id, float(p['reward_value']))
+                db.add_stars(uid, float(p['reward_value']))
                 await message.answer(f"✅ Активировано! +{p['reward_value']} ⭐")
-            else: # Если это подарок (например 🌹_Роза)
+            else:
                 item = p['reward_value']
-                conn.execute("INSERT INTO inventory (user_id, item_name) VALUES (?, ?)", (message.from_user.id, item))
+                # Добавляем в инвентарь (проверяем наличие для UPDATE или INSERT)
+                existing = conn.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item)).fetchone()
+                if existing:
+                    conn.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (uid, item))
+                else:
+                    conn.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (uid, item))
                 conn.commit()
-                await message.answer(f"✅ Активировано! Получен подарок: {item}")
+                await message.answer(f"✅ Активировано! Получен предмет: {item}")
         else:
-            await message.answer("❌ Код неверный или закончился.")
+            await message.answer("❌ Код неверный, либо закончились его активации.")
+            
     await state.clear()
 
 # ========== ЗАПУСК ==========
