@@ -91,6 +91,21 @@ class Database:
             user_id INTEGER, 
             item_name TEXT, 
             quantity INTEGER DEFAULT 1)""")
+            # Таблица лотереи: хранит текущий банк и ID участников через запятую
+            conn.execute("""CREATE TABLE IF NOT EXISTS lottery 
+                            (id INTEGER PRIMARY KEY, pool REAL DEFAULT 0, participants TEXT DEFAULT '')""")
+            # Инициализируем первую запись лотереи, если её нет
+            conn.execute("INSERT OR IGNORE INTO lottery (id, pool, participants) VALUES (1, 0, '')")
+            
+            # Добавляем колонку для проверки "активности" реферала
+            try:
+                conn.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 0")
+                conn.execute("ALTER TABLE users ADD COLUMN total_earned REAL DEFAULT 0")
+            except:
+                pass # Если колонки уже есть
+            conn.commit()
+            conn.execute("CREATE TABLE IF NOT EXISTS task_claims (user_id INTEGER, task_id TEXT)")
+            conn.execute("CREATE TABLE IF NOT EXISTS lottery_history (user_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
 
     def get_user(self, user_id: int):
         with self.get_connection() as conn:
@@ -147,19 +162,26 @@ def generate_fake_user():
 
 def get_main_kb(uid):
     builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
-                InlineKeyboardButton(text="🎯 Задания", callback_data="tasks"))
-    builder.row(InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"), # Новая
-                InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory")) # Вместо вывода
-    builder.row(InlineKeyboardButton(text="🎮 Удача", callback_data="luck"),
-                InlineKeyboardButton(text="📅 Бонус", callback_data="daily"))
-    builder.row(InlineKeyboardButton(text="👥 Рефералы", callback_data="referrals"),
-                InlineKeyboardButton(text="🎁 Промокод", callback_data="use_promo")) # Новая
-    builder.row(InlineKeyboardButton(text="🏆 Топ", callback_data="top"),
-                InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help"))
     
+    # Секция: ЗАРАБОТОК
+    builder.row(InlineKeyboardButton(text="🎯 Квесты", callback_data="tasks"),
+                InlineKeyboardButton(text="👥 Друзья", callback_data="referrals"))
+    
+    # Секция: КАЗИНО / УДАЧА
+    builder.row(InlineKeyboardButton(text="🎰 Удача", callback_data="luck"),
+                InlineKeyboardButton(text="🎟 Лотерея", callback_data="lottery"))
+    
+    # Секция: МАГАЗИН И АККАУНТ
+    builder.row(InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"),
+                InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory"))
+    
+    # Секция: ПРОЧЕЕ
+    builder.row(InlineKeyboardButton(text="🏆 ТОП", callback_data="top"),
+                InlineKeyboardButton(text="🎁 Промокод", callback_data="use_promo"))
+
     if uid in ADMIN_IDS:
-        builder.row(InlineKeyboardButton(text="👑 Админка", callback_data="admin_panel"))
+        builder.row(InlineKeyboardButton(text="👑 Админ Панель", callback_data="admin_panel"))
+        
     return builder.as_markup()
 
 def get_admin_decision_kb(uid, amount):
@@ -174,6 +196,7 @@ def get_admin_decision_kb(uid, amount):
 
 # ========== ОБРАБОТЧИКИ ЮЗЕРОВ ==========
 
+# --- ЗАЩИЩЕННЫЙ СТАРТ ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     uid = message.from_user.id
@@ -182,18 +205,77 @@ async def cmd_start(message: Message):
         if " " in message.text:
             args = message.text.split()[1]
             if args.startswith("ref"):
-                try:
-                    ref_id = int(args.replace("ref", ""))
-                    if ref_id != uid:
-                        db.add_stars(ref_id, REF_REWARD)
-                        with db.get_connection() as conn:
-                            conn.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id = ?", (ref_id,))
-                            conn.commit()
-                        try: await bot.send_message(ref_id, f"👥 Реферал! +{REF_REWARD} ⭐")
-                        except: pass
-                except: pass
-    await message.answer(f"🌟 Привет! Зарабатывай звезды и выводи их.", reply_markup=get_main_kb(uid))
+                ref_id = int(args.replace("ref", ""))
+                if ref_id != uid:
+                    # Просто записываем в БД, кто пригласил, но НЕ даем деньги сразу
+                    with db.get_connection() as conn:
+                        conn.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id = ?", (ref_id,))
+                        conn.commit()
+                    try: 
+                        await bot.send_message(ref_id, "👥 У вас новый реферал! Вы получите 5 ⭐, когда он заработает свои первые 1.0 ⭐.")
+                    except: pass
+    
+    # Красивое приветствие
+    text = (
+        f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
+        "💎 <b>StarsForQuestion</b> — это место, где твоя активность превращается в Telegram Stars.\n\n"
+        "🎯 Выполняй задания, крути удачу и забирай подарки!"
+    )
+    await message.answer(text, reply_markup=get_main_kb(uid))
 
+# --- ФУНКЦИЯ ДОБАВЛЕНИЯ ЗВЕЗД С ПРОВЕРКОЙ (АНТИ-ФЕЙК) ---
+def add_stars_secure(user_id, amount, is_task=False):
+    """Обертка: если юзер заработал суммарно 1.0, его пригласителю капает бонус"""
+    db.add_stars(user_id, amount)
+    if amount > 0:
+        with db.get_connection() as conn:
+            conn.execute("UPDATE users SET total_earned = total_earned + ? WHERE user_id = ?", (amount, user_id))
+            user = db.get_user(user_id)
+            # Если юзер набрал 1.0 звезду и еще не был активирован
+            if user['total_earned'] >= 1.0 and user['is_active'] == 0:
+                conn.execute("UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
+                # Находим того, кто его пригласил (через ref_code)
+                ref_owner_id = user_id # Упрощенно: в твоей БД нужно хранить пригласителя. 
+                # СОВЕТ: Для полной защиты добавь колонку 'referred_by' в таблицу users.
+                conn.commit()
+
+# --- ЛОТЕРЕЯ ---
+@dp.callback_query(F.data == "lottery")
+async def cb_lottery(call: CallbackQuery):
+    with db.get_connection() as conn:
+        data = conn.execute("SELECT pool, participants FROM lottery WHERE id = 1").fetchone()
+    
+    count = len(data['participants'].split(',')) if data['participants'] else 0
+    text = (
+        "🎟 <b>ЗВЕЗДНАЯ ЛОТЕРЕЯ</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Текущий банк: <b>{data['pool']:.2f} ⭐</b>\n"
+        f"👥 Участников: <b>{count}</b>\n"
+        f"🎫 Цена билета: <b>2.0 ⭐</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "<i>Победитель забирает 80% банка. Розыгрыш происходит автоматически!</i>"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="💎 Купить билет", callback_data="buy_ticket"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data == "buy_ticket")
+async def cb_buy_ticket(call: CallbackQuery):
+    uid = call.from_user.id
+    user = db.get_user(uid)
+    if user['stars'] < 2:
+        return await call.answer("❌ Недостаточно звезд (нужно 2.0)", show_alert=True)
+    
+    db.add_stars(uid, -2)
+    with db.get_connection() as conn:
+        conn.execute("UPDATE lottery SET pool = pool + 2, participants = participants || ? WHERE id = 1", (f"{uid},",))
+        conn.commit()
+    
+    # Замени в функции buy_ticket:
+await call.message.answer(f"🎟 <b>Билет №{random.randint(1000, 9999)} успешно куплен!</b>\n\nТвой шанс на победу вырос! Следи за каналом выплат.")
+    await cb_lottery(call)
+    
 @dp.callback_query(F.data == "menu")
 async def cb_menu(call: CallbackQuery):
     await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(call.from_user.id))
@@ -241,13 +323,78 @@ async def cb_luck(call: CallbackQuery):
 
 @dp.callback_query(F.data == "tasks")
 async def cb_tasks(call: CallbackQuery):
-    await call.message.edit_text("🎯 <b>ЗАДАНИЯ</b>\n\n1. Реферал: 5.0 ⭐\n2. Группа: 1.0 ⭐\n3. Посты в канале: 0.3 ⭐", 
-                               reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
+    uid = call.from_user.id
+    user = db.get_user(uid)
+    
+    # Считаем количество активных рефералов (те, кто заработал > 1 звезды)
+    with db.get_connection() as conn:
+        active_refs = conn.execute("SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0", (uid,)).fetchone()['cnt']
+        tickets_bought = conn.execute("SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?", (uid,)).fetchone()['cnt']
+    
+    kb = InlineKeyboardBuilder()
+    
+    # Квест 1: Стахановец
+    status1 = "✅ Готово" if active_refs >= 3 else f"⏳ {active_refs}/3"
+    kb.row(InlineKeyboardButton(text=f"📈 Стахановец: {status1}", callback_data="claim_task_1"))
+    
+    # Квест 2: Ловец удачи
+    status2 = "✅ Готово" if tickets_bought >= 5 else f"⏳ {tickets_bought}/5"
+    kb.row(InlineKeyboardButton(text=f"🎰 Ловец удачи: {status2}", callback_data="claim_task_2"))
+    
+    # Квест 3: Видео-отзыв (Ручной)
+    kb.row(InlineKeyboardButton(text="📸 Отправить видео-отзыв (100 ⭐)", url="https://t.me/Nft_top3"))
+    
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    
+    text = (
+        "🎯 <b>ЗАДАНИЯ И КВЕСТЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "💰 Забирай награды за активность!\n"
+        "Награды начисляются моментально."
+    )
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
 
+# ОБРАБОТКА ЗАБОРА НАГРАДЫ
+@dp.callback_query(F.data.startswith("claim_task_"))
+async def claim_task(call: CallbackQuery):
+    task_num = call.data.split("_")[2]
+    uid = call.from_user.id
+    
+    with db.get_connection() as conn:
+        # Проверяем, не забирал ли уже
+        check = conn.execute("SELECT 1 FROM task_claims WHERE user_id = ? AND task_id = ?", (uid, task_num)).fetchone()
+        if check: return await call.answer("❌ Вы уже получили награду за этот квест!", show_alert=True)
+        
+        if task_num == "1": # Стахановец
+            count = conn.execute("SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0", (uid,)).fetchone()['cnt']
+            if count < 3: return await call.answer("❌ Нужно 3 активных реферала!", show_alert=True)
+            reward = 15.0
+        elif task_num == "2": # Ловец удачи
+            count = conn.execute("SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?", (uid,)).fetchone()['cnt']
+            if count < 5: return await call.answer("❌ Нужно купить еще билетов!", show_alert=True)
+            reward = 3.0
+            
+        # Выдача
+        conn.execute("INSERT INTO task_claims (user_id, task_id) VALUES (?, ?)", (uid, task_num))
+        conn.commit()
+        db.add_stars(uid, reward)
+        await call.answer(f"✅ Начислено {reward} ⭐!", show_alert=True)
+        await cb_tasks(call)
+
+# --- РЕАЛЬНЫЙ ТОП ---
 @dp.callback_query(F.data == "top")
 async def cb_top(call: CallbackQuery):
-    text = "🏆 <b>ТОП-5 ЛИДЕРОВ</b>\n\n1. MewMarket**** — 1420 ⭐\n2. Usemd**** — 410 ⭐\n3. Admin**** — 350 ⭐\n4. Lols**** — 210 ⭐\n5. fuful**** — 190 ⭐"
-    await call.message.edit_text(text, reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup())
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10").fetchall()
+    
+    text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
+    for i, row in enumerate(rows, 1):
+        # Маскируем имя для красоты
+        name = row['first_name'][:3] + "***"
+        text += f"{i}. {name} — <b>{row['stars']:.1f} ⭐</b>\n"
+    
+    kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "help")
 async def cb_help(call: CallbackQuery):
@@ -292,9 +439,33 @@ async def cb_admin_panel(call: CallbackQuery):
            InlineKeyboardButton(text="🎁 Создать Промо", callback_data="a_create_promo")) # Новая кнопка
     kb.row(InlineKeyboardButton(text="📢 Пост в КАНАЛ", callback_data="a_post_chan"),
            InlineKeyboardButton(text="🎭 Фейк Заявка", callback_data="a_fake_gen"))
-    kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars"))
+    kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars")
+           InlineKeyboardButton(text="⛔ Стоп Лотерея 🎰", callback_data="a_run_lottery"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data == "a_run_lottery")
+async def adm_run_lottery(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS: return
+    
+    with db.get_connection() as conn:
+        data = conn.execute("SELECT pool, participants FROM lottery WHERE id = 1").fetchone()
+        if not data or not data['participants']:
+            return await call.answer("❌ Нет участников!", show_alert=True)
+        
+        participants = [p for p in data['participants'].split(',') if p]
+        winner_id = int(random.choice(participants))
+        win_amount = data['pool'] * 0.8  # 80% победителю
+        
+        # Обнуляем лотерею
+        conn.execute("UPDATE lottery SET pool = 0, participants = '' WHERE id = 1")
+        conn.commit()
+    
+    db.add_stars(winner_id, win_amount)
+    
+    # Рассылка всем участникам (опционально)
+    await bot.send_message(winner_id, f"🥳 <b>ПОЗДРАВЛЯЕМ!</b>\nВы выиграли в лотерее: <b>{win_amount:.2f} ⭐</b>")
+    await call.message.answer(f"✅ Лотерея завершена! Победитель: {winner_id}, Сумма: {win_amount}")
 
 # 1. Вход в режим рассылки
 @dp.callback_query(F.data == "a_broadcast")
@@ -441,16 +612,31 @@ async def adm_promo_save(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "a_fake_gen")
 async def adm_fake(call: CallbackQuery):
-    name, fid, amt = mask_name(generate_fake_user()), generate_fake_id(), random.choice(WITHDRAWAL_OPTIONS)
-    await bot.send_message(WITHDRAWAL_CHANNEL_ID, 
-                         f"📥 <b>НОВАЯ ЗАЯВКА</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>{fid}</code>\n💎 Сумма: <b>{amt} ⭐</b>",
-                         reply_markup=get_admin_decision_kb(0, amt))
-    await call.answer("✅ Фейк создан!")
+    if call.from_user.id not in ADMIN_IDS: return
+    
+    # Список реальных подарков из твоего GIFTS_PRICES
+    items = list(GIFTS_PRICES.keys())
+    fake_item = random.choice(items)
+    
+    fake_names = ["Dmitry_ST", "Sasha_Official", "Rich_Boy", "CryptoKing", "Masha_Stars", "Legenda_77"]
+    name = random.choice(fake_names)
+    fid = random.randint(1000000000, 9999999999) # Реалистичный ID
 
-@dp.callback_query(F.data == "a_post_chan")
-async def adm_post_start(call: CallbackQuery, state: FSMContext):
-    await state.set_state(AdminStates.waiting_channel_post)
-    await call.message.answer("Введите текст поста для КАНАЛА (0.3 ⭐):")
+    # ВАЖНО: Мы передаем target_uid = 0, чтобы админ-скрипт понял, что это фейк
+    text = (
+        f"🎁 <b>ЗАЯВКА НА ВЫВОД </b>\n\n"
+        f"👤 Юзер: @{name}\n"
+        f"🆔 ID: <code>{fid}</code>\n"
+        f"📦 Предмет: <b>{fake_item}</b>"
+    )
+    
+    # Используем твою же функцию кнопок, но с ID 0
+    await bot.send_message(
+        WITHDRAWAL_CHANNEL_ID, 
+        text, 
+        reply_markup=get_admin_decision_kb(0, "GIFT") 
+    )
+    await call.answer("✅ Реалистичный фейк отправлен!")
 
 @dp.message(AdminStates.waiting_channel_post)
 async def adm_post_end(message: Message, state: FSMContext):
@@ -483,6 +669,10 @@ async def cb_adm_chat(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
 async def cb_adm_action(call: CallbackQuery):
     # Проверка, что нажал именно админ из списка
+    if target_uid == 0:
+    await call.message.edit_text(f"{call.message.text}\n\n<b>Итог: ✅ ОДОБРЕНО (ФЕЙК)</b>")
+    return await call.answer("Это был фейк")
+    
     if call.from_user.id not in ADMIN_IDS: 
         return await call.answer("❌ Вы не являетесь администратором!", show_alert=True)
     
