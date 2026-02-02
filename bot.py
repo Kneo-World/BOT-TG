@@ -106,6 +106,20 @@ class Database:
             conn.commit()
             conn.execute("CREATE TABLE IF NOT EXISTS task_claims (user_id INTEGER, task_id TEXT)")
             conn.execute("CREATE TABLE IF NOT EXISTS lottery_history (user_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
+            conn.execute("CREATE TABLE IF NOT EXISTS nfts (id INTEGER PRIMARY KEY, owner_id INTEGER, name TEXT, serial_number INTEGER, stats TEXT)")
+            conn.execute("CREATE TABLE IF NOT EXISTS marketplace (id INTEGER PRIMARY KEY, seller_id INTEGER, nft_id INTEGER, price REAL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS daily_streaks (user_id INTEGER PRIMARY KEY, streak INTEGER DEFAULT 0, last_date TEXT)")
+            # Для ежедневного бонуса (стрик)
+            conn.execute("""CREATE TABLE IF NOT EXISTS daily_bonus 
+                    (user_id INTEGER PRIMARY KEY, last_date TEXT, streak INTEGER DEFAULT 0)""")
+            # Для хранения созданных дуэлей
+            conn.execute("""CREATE TABLE IF NOT EXISTS active_duels 
+                    (creator_id INTEGER PRIMARY KEY, amount REAL)""")
+            # Для P2P рынка
+            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace 
+                    (id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, item_name TEXT, price REAL)""")
+            conn.execute("CREATE TABLE IF NOT EXISTS task_claims (user_id INTEGER, task_id TEXT)")
+            conn.commit()
 
     def get_user(self, user_id: int):
         with self.get_connection() as conn:
@@ -199,6 +213,17 @@ def get_admin_decision_kb(uid, amount):
 # --- ЗАЩИЩЕННЫЙ СТАРТ ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
+    # В самом начале функции cmd_start:
+args = message.text.split()
+if len(args) > 1 and args[1].startswith("duel"):
+    creator_id = int(args[1].replace("duel", ""))
+    # Проверяем, есть ли такой создатель и не сам ли это юзер
+    if creator_id != message.from_user.id:
+        kb = InlineKeyboardBuilder().row(
+            InlineKeyboardButton(text="🤝 Принять вызов (5.0 ⭐)", callback_data=f"accept_duel_{creator_id}"),
+            InlineKeyboardButton(text="❌ Отказ", callback_data="menu")
+        )
+        return await message.answer(f"⚔️ Игрок ID:{creator_id} вызывает тебя на дуэль!", reply_markup=kb.as_markup())
     uid = message.from_user.id
     if not db.get_user(uid):
         db.create_user(uid, message.from_user.username, message.from_user.first_name)
@@ -238,6 +263,81 @@ def add_stars_secure(user_id, amount, is_task=False):
                 ref_owner_id = user_id # Упрощенно: в твоей БД нужно хранить пригласителя. 
                 # СОВЕТ: Для полной защиты добавь колонку 'referred_by' в таблицу users.
                 conn.commit()
+
+# ========== ЕЖЕДНЕВНЫЙ БОНУС (СТРИК) ==========
+@dp.callback_query(F.data == "daily_bonus")
+async def cb_daily_bonus(call: CallbackQuery):
+    uid = call.from_user.id
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    
+    with db.get_connection() as conn:
+        data = conn.execute("SELECT last_date, streak FROM daily_bonus WHERE user_id = ?", (uid,)).fetchone()
+        
+        if data:
+            last_date = datetime.strptime(data['last_date'], "%Y-%m-%d")
+            delta = (now.date() - last_date.date()).days
+            
+            if delta == 0:
+                return await call.answer("❌ Бонус уже получен! Приходи завтра.", show_alert=True)
+            elif delta == 1:
+                new_streak = min(data['streak'] + 1, 7) # Макс 7 дней
+            else:
+                new_streak = 1 # Сброс, если пропустил день
+            conn.execute("UPDATE daily_bonus SET last_date = ?, streak = ? WHERE user_id = ?", (today_str, new_streak, uid))
+        else:
+            new_streak = 1
+            conn.execute("INSERT INTO daily_bonus (user_id, last_date, streak) VALUES (?, ?, ?)", (uid, today_str, new_streak))
+        conn.commit()
+
+    reward = round(0.1 * new_streak, 2)
+    db.add_stars(uid, reward)
+    await call.answer(f"✅ День {new_streak}! Получено: {reward} ⭐", show_alert=True)
+
+# ========== ДУЭЛИ (СТАВКИ) ==========
+@dp.callback_query(F.data == "duel_menu")
+async def cb_duel_menu(call: CallbackQuery):
+    uid = call.from_user.id
+    bot_username = (await bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start=duel{uid}"
+    
+    text = (
+        "⚔️ <b>ДУЭЛЬНЫЙ КЛУБ</b>\n━━━━━━━━━━━━━━\n"
+        "Ставка: <b>5.0 ⭐</b>\n"
+        "Победитель получает: <b>9.0 ⭐</b>\n\n"
+        "Отправь ссылку другу, чтобы вызвать его на бой:"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📨 Скинуть ссылку другу", switch_inline_query=link))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    
+    # Чтобы юзер мог просто скопировать ссылку
+    await call.message.edit_text(f"{text}\n<code>{link}</code>", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("accept_duel_"))
+async def cb_accept_duel(call: CallbackQuery):
+    opponent_id = call.from_user.id
+    creator_id = int(call.data.split("_")[2])
+    
+    if opponent_id == creator_id:
+        return await call.answer("❌ Нельзя играть с самим собой!", show_alert=True)
+
+    user = db.get_user(opponent_id)
+    if user['stars'] < 5.0:
+        return await call.answer("❌ Недостаточно ⭐ для ставки!", show_alert=True)
+
+    # Списываем ставку у второго игрока (у первого она уже должна быть списана при создании)
+    db.add_stars(opponent_id, -5.0)
+    
+    msg = await call.message.answer("🎲 Бросаем кости...")
+    dice = await msg.answer_dice("🎲")
+    await asyncio.sleep(3.5)
+    
+    # Логика: 1-3 победил создатель, 4-6 победил гость
+    winner_id = creator_id if dice.dice.value <= 3 else opponent_id
+    db.add_stars(winner_id, 9.0)
+    
+    await call.message.answer(f"🎰 Выпало <b>{dice.dice.value}</b>!\n👑 Победитель: <a href='tg://user?id={winner_id}'>Игрок</a>\nЗачислено: <b>9.0 ⭐</b>")
 
 # --- ЛОТЕРЕЯ ---
 @dp.callback_query(F.data == "lottery")
@@ -719,6 +819,13 @@ GIFTS_PRICES = {
     "🍰 Тортик": 150, "💐 Букет": 150, "🚀 Ракета": 150, "🍾 Шампанское": 150,
     "🏆 Кубок": 300, "💍 Колечко": 300, "💎 Алмаз": 300
 }
+
+SPECIAL_ITEMS = {
+    "Ramen": 250,
+    "Candle": 199,
+    "Calendar": 320
+}
+
 ITEMS_PER_PAGE = 5
 
 # --- МАГАЗИН ---
@@ -910,6 +1017,35 @@ async def promo_process(message: Message, state: FSMContext):
             await message.answer("❌ Код неверный, либо закончились его активации.")
             
     await state.clear()
+
+@dp.callback_query(F.data == "special_shop")
+async def cb_special_shop(call: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🍜 Ramen — 250 ⭐", callback_data="buy_t_Ramen"))
+    kb.row(InlineKeyboardButton(text="🕯 B-Day Candle — 199 ⭐", callback_data="buy_t_Candle"))
+    kb.row(InlineKeyboardButton(text="🗓 Desk Calendar — 320 ⭐", callback_data="buy_t_Calendar"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text("🛒 <b>ЭКСКЛЮЗИВНЫЕ ТОВАРЫ</b>", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("buy_t_"))
+async def buy_special_item(call: CallbackQuery):
+    item_key = call.data.split("_")[2] # Ramen, Candle или Calendar
+    full_name = {"Ramen": "🍜 Ramen", "Candle": "🕯 B-Day Candle", "Calendar": "🗓 Desk Calendar"}[item_key]
+    price = SPECIAL_ITEMS[item_key]
+    uid = call.from_user.id
+    
+    user = db.get_user(uid)
+    if user['stars'] < price:
+        return await call.answer("❌ Недостаточно звезд!", show_alert=True)
+    
+    db.add_stars(uid, -price)
+    # Добавляем в инвентарь
+    with db.get_connection() as conn:
+        conn.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1) "
+                     "ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + 1", (uid, full_name))
+        conn.commit()
+    
+    await call.answer(f"✅ {full_name} куплен!", show_alert=True)
 
 # ========== ЗАПУСК ==========
 async def web_handle(request): return web.Response(text="Bot Active")
