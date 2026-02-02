@@ -820,10 +820,11 @@ GIFTS_PRICES = {
     "🏆 Кубок": 300, "💍 Колечко": 300, "💎 Алмаз": 300
 }
 
+# Лимиты: Ramen 25, Candle 30, Calendar 18
 SPECIAL_ITEMS = {
-    "Ramen": 250,
-    "Candle": 199,
-    "Calendar": 320
+    "Ramen": {"price": 250, "limit": 25, "full_name": "🍜 Ramen"},
+    "Candle": {"price": 199, "limit": 30, "full_name": "🕯 B-Day Candle"},
+    "Calendar": {"price": 320, "limit": 18, "full_name": "🗓 Desk Calendar"}
 }
 
 ITEMS_PER_PAGE = 5
@@ -1021,11 +1022,24 @@ async def promo_process(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "special_shop")
 async def cb_special_shop(call: CallbackQuery):
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="🍜 Ramen — 250 ⭐", callback_data="buy_t_Ramen"))
-    kb.row(InlineKeyboardButton(text="🕯 B-Day Candle — 199 ⭐", callback_data="buy_t_Candle"))
-    kb.row(InlineKeyboardButton(text="🗓 Desk Calendar — 320 ⭐", callback_data="buy_t_Calendar"))
+    
+    with db.get_connection() as conn:
+        for key, info in SPECIAL_ITEMS.items():
+            # Считаем, сколько уже купили через инвентарь (сумма всех quantity для этого товара)
+            sold = conn.execute("SELECT SUM(quantity) FROM inventory WHERE item_name = ?", (info['full_name'],)).fetchone()[0] or 0
+            left = info['limit'] - sold
+            
+            if left > 0:
+                text = f"{info['full_name']} — {info['price']} ⭐ (Осталось: {left})"
+                callback = f"buy_t_{key}"
+            else:
+                text = f"{info['full_name']} — 🚫 НЕТ В НАЛИЧИИ"
+                callback = "sold_out"
+                
+            kb.row(InlineKeyboardButton(text=text, callback_data=callback))
+            
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text("🛒 <b>ЭКСКЛЮЗИВНЫЕ ТОВАРЫ</b>", reply_markup=kb.as_markup())
+    await call.message.edit_text("🛒 <b>ЭКСКЛЮЗИВНЫЕ ТОВАРЫ</b>\n\n<i>После окончания тиража ищите товары на P2P Рынке!</i>", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("buy_t_"))
 async def buy_special_item(call: CallbackQuery):
