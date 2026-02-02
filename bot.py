@@ -47,6 +47,11 @@ raw_admins = os.getenv("ADMIN_IDS", "8364667153")
 ADMIN_IDS = [int(id.strip()) for id in raw_admins.split(",") if id.strip()]
 WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL", "-1003891414947") 
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
+SPECIAL_ITEMS = {
+    "Ramen": {"price": 250, "limit": 25, "full_name": "🍜 Ramen"},
+    "Candle": {"price": 199, "limit": 30, "full_name": "🕯 B-Day Candle"},
+    "Calendar": {"price": 320, "limit": 18, "full_name": "🗓 Desk Calendar"}
+}
 PORT = int(os.environ.get("PORT", 10000))
 
 # Экономика
@@ -928,11 +933,17 @@ async def cb_inventory_logic(call: CallbackQuery):
 @dp.callback_query(F.data.startswith("pre_out_"))
 async def cb_pre_out(call: CallbackQuery):
     item = call.data.replace("pre_out_", "")
-    kb = InlineKeyboardBuilder().row(
-        InlineKeyboardButton(text="✅ Да, вывести", callback_data=f"confirm_out_{item}"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="inventory_0")
-    )
-    await call.message.edit_text(f"❓ Хотите вывести <b>{item}</b>?", reply_markup=kb.as_markup())
+    kb = InlineKeyboardBuilder()
+    
+    # Кнопка обычного вывода
+    kb.row(InlineKeyboardButton(text="🎁 Получить как подарок", callback_data=f"confirm_out_{item}"))
+    
+    # Если это эксклюзивный товар — разрешаем продать его другим
+    if any(info['full_name'] in item for info in SPECIAL_ITEMS.values()):
+        kb.row(InlineKeyboardButton(text="💰 Выставить на P2P Маркет", callback_data=f"sell_p2p_{item}"))
+        
+    kb.row(InlineKeyboardButton(text="❌ Отмена", callback_data="inventory_0"))
+    await call.message.edit_text(f"Вы выбрали: <b>{item}</b>\nЧто хотите сделать?", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("confirm_out_"))
 async def cb_final_out(call: CallbackQuery):
@@ -1025,21 +1036,30 @@ async def cb_special_shop(call: CallbackQuery):
     
     with db.get_connection() as conn:
         for key, info in SPECIAL_ITEMS.items():
-            # Считаем, сколько уже купили через инвентарь (сумма всех quantity для этого товара)
-            sold = conn.execute("SELECT SUM(quantity) FROM inventory WHERE item_name = ?", (info['full_name'],)).fetchone()[0] or 0
+            # Считаем, сколько уже куплено (из таблицы инвентаря)
+            res = conn.execute("SELECT SUM(quantity) FROM inventory WHERE item_name = ?", (info['full_name'],)).fetchone()
+            sold = res[0] if res and res[0] else 0
             left = info['limit'] - sold
             
             if left > 0:
                 text = f"{info['full_name']} — {info['price']} ⭐ (Осталось: {left})"
                 callback = f"buy_t_{key}"
             else:
-                text = f"{info['full_name']} — 🚫 НЕТ В НАЛИЧИИ"
+                text = f"{info['full_name']} — 🚫 РАСПРОДАНО"
                 callback = "sold_out"
                 
             kb.row(InlineKeyboardButton(text=text, callback_data=callback))
             
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text("🛒 <b>ЭКСКЛЮЗИВНЫЕ ТОВАРЫ</b>\n\n<i>После окончания тиража ищите товары на P2P Рынке!</i>", reply_markup=kb.as_markup())
+    await call.message.edit_text(
+        "🛒 <b>ЭКСКЛЮЗИВНЫЕ ТОВАРЫ</b>\n\n"
+        "<i>Когда лимит исчерпан, товар можно купить только у игроков на P2P Рынке!</i>", 
+        reply_markup=kb.as_markup()
+    )
+
+@dp.callback_query(F.data == "sold_out")
+async def cb_sold_out(call: CallbackQuery):
+    await call.answer("❌ Этот товар закончился в магазине! Ищите его на P2P рынке.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("buy_t_"))
 async def buy_special_item(call: CallbackQuery):
@@ -1060,6 +1080,54 @@ async def buy_special_item(call: CallbackQuery):
         conn.commit()
     
     await call.answer(f"✅ {full_name} куплен!", show_alert=True)
+
+# --- ВИТРИНА P2P РЫНКА ---
+@dp.callback_query(F.data == "p2p_market")
+async def cb_p2p_market(call: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    with db.get_connection() as conn:
+        # Показываем только те товары, которые относятся к эксклюзивным
+        items = conn.execute("SELECT id, seller_id, item_name, price FROM marketplace").fetchall()
+        
+    text = "🏪 <b>P2P МАРКЕТ</b>\n\nЗдесь можно перекупить эксклюзивные товары у других игроков.\n"
+    
+    if not items:
+        text += "\n<i>На данный момент лотов нет.</i>"
+    
+    for it in items:
+        kb.row(InlineKeyboardButton(text=f"🛒 {it['item_name']} | {it['price']} ⭐", callback_data=f"buy_p2p_{it['id']}"))
+    
+    kb.row(InlineKeyboardButton(text="➕ Продать свой товар", callback_data="inventory_0"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
+
+# --- ПОКУПКА НА P2P ---
+@dp.callback_query(F.data.startswith("buy_p2p_"))
+async def cb_buy_p2p(call: CallbackQuery):
+    order_id = int(call.data.split("_")[2])
+    buyer_id = call.from_user.id
+    
+    with db.get_connection() as conn:
+        order = conn.execute("SELECT * FROM marketplace WHERE id = ?", (order_id,)).fetchone()
+        if not order: return await call.answer("❌ Товар уже продан!", show_alert=True)
+        if order['seller_id'] == buyer_id: return await call.answer("❌ Нельзя купить свой же товар!", show_alert=True)
+        
+        buyer = db.get_user(buyer_id)
+        if buyer['stars'] < order['price']: return await call.answer("❌ Недостаточно ⭐", show_alert=True)
+        
+        # Сделка
+        db.add_stars(buyer_id, -order['price']) # Списываем у покупателя
+        db.add_stars(order['seller_id'], order['price'] * 0.95) # Продавцу 95% (5% комиссия боту)
+        
+        # Передаем товар
+        conn.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1) "
+                     "ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + 1", (buyer_id, order['item_name']))
+        conn.execute("DELETE FROM marketplace WHERE id = ?", (order_id,))
+        conn.commit()
+        
+    await call.answer(f"✅ Успешная покупка: {order['item_name']}!", show_alert=True)
+    await cb_p2p_market(call)
+
 
 # ========== ЗАПУСК ==========
 async def web_handle(request): return web.Response(text="Bot Active")
