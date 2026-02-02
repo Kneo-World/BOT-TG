@@ -192,6 +192,7 @@ def get_main_kb(uid):
     
     # Секция: МАГАЗИН И АККАУНТ
     builder.row(InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"),
+                InlineKeyboardButton(text="🏪 P2P Маркет", callback_data="p2p_market"),
                 InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory"))
     
     # Секция: ПРОЧЕЕ
@@ -218,17 +219,16 @@ def get_admin_decision_kb(uid, amount):
 # --- ЗАЩИЩЕННЫЙ СТАРТ ---
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    # В самом начале функции cmd_start:
-args = message.text.split()
-if len(args) > 1 and args[1].startswith("duel"):
-    creator_id = int(args[1].replace("duel", ""))
-    # Проверяем, есть ли такой создатель и не сам ли это юзер
-    if creator_id != message.from_user.id:
-        kb = InlineKeyboardBuilder().row(
-            InlineKeyboardButton(text="🤝 Принять вызов (5.0 ⭐)", callback_data=f"accept_duel_{creator_id}"),
-            InlineKeyboardButton(text="❌ Отказ", callback_data="menu")
-        )
-        return await message.answer(f"⚔️ Игрок ID:{creator_id} вызывает тебя на дуэль!", reply_markup=kb.as_markup())
+    args = message.text.split()
+    if len(args) > 1 and args[1].startswith("duel"):
+        creator_id = int(args[1].replace("duel", ""))
+        if creator_id != message.from_user.id:
+            kb = InlineKeyboardBuilder().row(
+                InlineKeyboardButton(text="🤝 Принять вызов (5.0 ⭐)", callback_data=f"accept_duel_{creator_id}"),
+                InlineKeyboardButton(text="❌ Отказ", callback_data="menu")
+            )
+            return await message.answer(f"⚔️ Игрок ID:{creator_id} вызывает тебя на дуэль!", reply_markup=kb.as_markup())
+    
     uid = message.from_user.id
     if not db.get_user(uid):
         db.create_user(uid, message.from_user.username, message.from_user.first_name)
@@ -544,7 +544,7 @@ async def cb_admin_panel(call: CallbackQuery):
            InlineKeyboardButton(text="🎁 Создать Промо", callback_data="a_create_promo")) # Новая кнопка
     kb.row(InlineKeyboardButton(text="📢 Пост в КАНАЛ", callback_data="a_post_chan"),
            InlineKeyboardButton(text="🎭 Фейк Заявка", callback_data="a_fake_gen"))
-    kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars")
+    kb.row(InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars"),
            InlineKeyboardButton(text="⛔ Стоп Лотерея 🎰", callback_data="a_run_lottery"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
@@ -1081,25 +1081,31 @@ async def buy_special_item(call: CallbackQuery):
     
     await call.answer(f"✅ {full_name} куплен!", show_alert=True)
 
-# --- ВИТРИНА P2P РЫНКА ---
+# ========== P2P МАРКЕТ И ПРОДАЖА ==========
+
 @dp.callback_query(F.data == "p2p_market")
 async def cb_p2p_market(call: CallbackQuery):
     kb = InlineKeyboardBuilder()
     with db.get_connection() as conn:
-        # Показываем только те товары, которые относятся к эксклюзивным
         items = conn.execute("SELECT id, seller_id, item_name, price FROM marketplace").fetchall()
-        
-    text = "🏪 <b>P2P МАРКЕТ</b>\n\nЗдесь можно перекупить эксклюзивные товары у других игроков.\n"
     
+    text = "🏪 <b>P2P МАРКЕТ</b>\n\nЗдесь можно перекупить эксклюзивы у игроков.\n"
     if not items:
-        text += "\n<i>На данный момент лотов нет.</i>"
+        text += "\n<i>Лотов пока нет.</i>"
     
     for it in items:
         kb.row(InlineKeyboardButton(text=f"🛒 {it['item_name']} | {it['price']} ⭐", callback_data=f"buy_p2p_{it['id']}"))
     
-    kb.row(InlineKeyboardButton(text="➕ Продать свой товар", callback_data="inventory_0"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text(text, reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("sell_p2p_"))
+async def cb_sell_item_start(call: CallbackQuery, state: FSMContext):
+    item_name = call.data.replace("sell_p2p_", "")
+    await state.update_data(sell_item=item_name)
+    # Используем твой стейт для ввода цены
+    await state.set_state(AdminStates.waiting_give_data) 
+    await call.message.answer(f"Введите цену в ⭐ за которую хотите продать <b>{item_name}</b>:")
 
 # --- ПОКУПКА НА P2P ---
 @dp.callback_query(F.data.startswith("buy_p2p_"))
@@ -1110,24 +1116,20 @@ async def cb_buy_p2p(call: CallbackQuery):
     with db.get_connection() as conn:
         order = conn.execute("SELECT * FROM marketplace WHERE id = ?", (order_id,)).fetchone()
         if not order: return await call.answer("❌ Товар уже продан!", show_alert=True)
-        if order['seller_id'] == buyer_id: return await call.answer("❌ Нельзя купить свой же товар!", show_alert=True)
+        if order['seller_id'] == buyer_id: return await call.answer("❌ Свой товар купить нельзя!", show_alert=True)
         
         buyer = db.get_user(buyer_id)
         if buyer['stars'] < order['price']: return await call.answer("❌ Недостаточно ⭐", show_alert=True)
         
-        # Сделка
-        db.add_stars(buyer_id, -order['price']) # Списываем у покупателя
-        db.add_stars(order['seller_id'], order['price'] * 0.95) # Продавцу 95% (5% комиссия боту)
+        db.add_stars(buyer_id, -order['price']) 
+        db.add_stars(order['seller_id'], order['price'] * 0.9) 
         
-        # Передаем товар
-        conn.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1) "
-                     "ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + 1", (buyer_id, order['item_name']))
+        conn.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1) ON CONFLICT(user_id, item_name) DO UPDATE SET quantity = quantity + 1", (buyer_id, order['item_name']))
         conn.execute("DELETE FROM marketplace WHERE id = ?", (order_id,))
         conn.commit()
         
-    await call.answer(f"✅ Успешная покупка: {order['item_name']}!", show_alert=True)
+    await call.answer(f"✅ Успешно купили {order['item_name']}!", show_alert=True)
     await cb_p2p_market(call)
-
 
 # ========== ЗАПУСК ==========
 async def web_handle(request): return web.Response(text="Bot Active")
