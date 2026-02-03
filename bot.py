@@ -217,10 +217,12 @@ def get_main_kb(uid):
     
     # Секция: ЗАРАБОТОК
     builder.row(InlineKeyboardButton(text="🎯 Квесты", callback_data="tasks"),
+                InlineKeyboardButton(text="⚔️ Дуель", callback_data="duel_menu"),
                 InlineKeyboardButton(text="👥 Друзья", callback_data="referrals"))
     
     # Секция: КАЗИНО / УДАЧА
     builder.row(InlineKeyboardButton(text="🎰 Удача", callback_data="luck"),
+                InlineKeyboardButton(text="📆 Ежедневно", callback_data="daily"),
                 InlineKeyboardButton(text="🎟 Лотерея", callback_data="lottery"))
     
     # Секция: МАГАЗИН И АККАУНТ
