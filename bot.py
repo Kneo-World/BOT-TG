@@ -73,59 +73,90 @@ class Database:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def init_db(self):
+
+def init_db(self):
         with self.get_connection() as conn:
-            conn.execute("""CREATE TABLE IF NOT EXISTS promo_history (
-            user_id INTEGER, 
-            code TEXT, 
-            PRIMARY KEY(user_id, code))""")
+            # 1. Основные таблицы
             conn.execute("""CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, 
-                stars REAL DEFAULT 0, referrals INTEGER DEFAULT 0, 
-                last_daily TIMESTAMP, last_luck TIMESTAMP, ref_code TEXT UNIQUE)""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS withdrawals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, amount REAL,
-                status TEXT DEFAULT 'pending', created_at TIMESTAMP)""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS post_claims (
-                user_id INTEGER, post_id TEXT, PRIMARY KEY(user_id, post_id))""")
-            conn.commit()
-            conn.execute("ALTER TABLE users ADD COLUMN ref_boost REAL DEFAULT 1.0") # Множитель рефералов 
-            conn.execute("""CREATE TABLE IF NOT EXISTS promo (
-            code TEXT PRIMARY KEY, reward_type TEXT, reward_value TEXT, uses INTEGER)""")
+                user_id INTEGER PRIMARY KEY, 
+                username TEXT, 
+                first_name TEXT, 
+                stars REAL DEFAULT 0, 
+                referrals INTEGER DEFAULT 0, 
+                last_daily TIMESTAMP, 
+                last_luck TIMESTAMP, 
+                ref_code TEXT UNIQUE,
+                ref_boost REAL DEFAULT 1.0,
+                is_active INTEGER DEFAULT 0,
+                total_earned REAL DEFAULT 0,
+                referred_by INTEGER  -- Добавь это для отслеживания пригласителя
+            )""")
+
+            # 2. Экономика и Инвентарь
             conn.execute("""CREATE TABLE IF NOT EXISTS inventory (
-            user_id INTEGER, 
-            item_name TEXT, 
-            quantity INTEGER DEFAULT 1)""")
-            # Таблица лотереи: хранит текущий банк и ID участников через запятую
-            conn.execute("""CREATE TABLE IF NOT EXISTS lottery 
-                            (id INTEGER PRIMARY KEY, pool REAL DEFAULT 0, participants TEXT DEFAULT '')""")
-            # Инициализируем первую запись лотереи, если её нет
+                user_id INTEGER, 
+                item_name TEXT, 
+                quantity INTEGER DEFAULT 1,
+                PRIMARY KEY(user_id, item_name) -- Чтобы не было дублей одного предмета
+            )""")
+
+            # 3. Маркетплейс P2P
+            # Сначала удалим старую, если она была без AUTOINCREMENT, и создадим правильно
+            conn.execute("DROP TABLE IF EXISTS marketplace")
+            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                seller_id INTEGER, 
+                item_name TEXT, 
+                price REAL
+            )""")
+
+            # 4. Лотерея
+            conn.execute("""CREATE TABLE IF NOT EXISTS lottery (
+                id INTEGER PRIMARY KEY, 
+                pool REAL DEFAULT 0, 
+                participants TEXT DEFAULT ''
+            )""")
             conn.execute("INSERT OR IGNORE INTO lottery (id, pool, participants) VALUES (1, 0, '')")
             
-            # Добавляем колонку для проверки "активности" реферала
-            try:
-                conn.execute("ALTER TABLE users ADD COLUMN is_active INTEGER DEFAULT 0")
-                conn.execute("ALTER TABLE users ADD COLUMN total_earned REAL DEFAULT 0")
-            except:
-                pass # Если колонки уже есть
-            conn.commit()
-            conn.execute("CREATE TABLE IF NOT EXISTS task_claims (user_id INTEGER, task_id TEXT)")
-            conn.execute("CREATE TABLE IF NOT EXISTS lottery_history (user_id INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
-            conn.execute("CREATE TABLE IF NOT EXISTS nfts (id INTEGER PRIMARY KEY, owner_id INTEGER, name TEXT, serial_number INTEGER, stats TEXT)")
-            conn.execute("CREATE TABLE IF NOT EXISTS marketplace (id INTEGER PRIMARY KEY, seller_id INTEGER, nft_id INTEGER, price REAL)")
-            conn.execute("CREATE TABLE IF NOT EXISTS daily_streaks (user_id INTEGER PRIMARY KEY, streak INTEGER DEFAULT 0, last_date TEXT)")
-            # Для ежедневного бонуса (стрик)
-            conn.execute("""CREATE TABLE IF NOT EXISTS daily_bonus 
-                    (user_id INTEGER PRIMARY KEY, last_date TEXT, streak INTEGER DEFAULT 0)""")
-            # Для хранения созданных дуэлей
-            conn.execute("""CREATE TABLE IF NOT EXISTS active_duels 
-                    (creator_id INTEGER PRIMARY KEY, amount REAL)""")
-            # Для P2P рынка
-            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace 
-                    (id INTEGER PRIMARY KEY AUTOINCREMENT, seller_id INTEGER, item_name TEXT, price REAL)""")
-            conn.execute("CREATE TABLE IF NOT EXISTS task_claims (user_id INTEGER, task_id TEXT)")
-            conn.commit()
+            conn.execute("""CREATE TABLE IF NOT EXISTS lottery_history (
+                user_id INTEGER, 
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )""")
 
+            # 5. Квесты и Промокоды
+            conn.execute("""CREATE TABLE IF NOT EXISTS task_claims (
+                user_id INTEGER, 
+                task_id TEXT,
+                PRIMARY KEY(user_id, task_id)
+            )""")
+            
+            conn.execute("""CREATE TABLE IF NOT EXISTS promo (
+                code TEXT PRIMARY KEY, 
+                reward_type TEXT, 
+                reward_value TEXT, 
+                uses INTEGER
+            )""")
+            
+            conn.execute("""CREATE TABLE IF NOT EXISTS promo_history (
+                user_id INTEGER, 
+                code TEXT, 
+                PRIMARY KEY(user_id, code)
+            )""")
+
+            # 6. Стрики и Бонусы
+            conn.execute("""CREATE TABLE IF NOT EXISTS daily_bonus (
+                user_id INTEGER PRIMARY KEY, 
+                last_date TEXT, 
+                streak INTEGER DEFAULT 0
+            )""")
+
+            # 7. Дуэли
+            conn.execute("""CREATE TABLE IF NOT EXISTS active_duels (
+                creator_id INTEGER PRIMARY KEY, 
+                amount REAL
+            )""")
+
+            conn.commit()
     def get_user(self, user_id: int):
         with self.get_connection() as conn:
             return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
@@ -248,7 +279,7 @@ async def cmd_start(message: Message):
     # Красивое приветствие
     text = (
         f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
-        "💎 <b>StarsForQuestion</b> — это место, где твоя активность превращается в Telegram Stars.\n\n"
+        "💎 <b>StarsForQuestion</b> — это место, где твоя активность превращается в Звезды.\n\n"
         "🎯 Выполняй задания, крути удачу и забирай подарки!"
     )
     await message.answer(text, reply_markup=get_main_kb(uid))
