@@ -377,8 +377,7 @@ async def cb_buy_ticket(call: CallbackQuery):
         conn.execute("UPDATE lottery SET pool = pool + 2, participants = participants || ? WHERE id = 1", (f"{uid},",))
         conn.commit()
     
-    # Замени в функции buy_ticket:
-await call.message.answer(f"🎟 <b>Билет №{random.randint(1000, 9999)} успешно куплен!</b>\n\nТвой шанс на победу вырос! Следи за каналом выплат.")
+    await call.message.answer(f"🎟 <b>Билет №{random.randint(1000, 9999)} успешно куплен!</b>\n\nТвой шанс на победу вырос! Следи за каналом выплат.")
     await cb_lottery(call)
     
 @dp.callback_query(F.data == "menu")
