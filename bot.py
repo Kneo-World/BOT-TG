@@ -232,6 +232,7 @@ def get_main_kb(uid):
     
     # Секция: ПРОЧЕЕ
     builder.row(InlineKeyboardButton(text="🏆 ТОП", callback_data="top"),
+                InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
                 InlineKeyboardButton(text="🎁 Промокод", callback_data="use_promo"))
 
     if uid in ADMIN_IDS:
