@@ -772,49 +772,45 @@ async def cb_adm_chat(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
 async def cb_adm_action(call: CallbackQuery):
-    # Проверка, что нажал именно админ из списка
-    if target_uid == 0:
-    await call.message.edit_text(f"{call.message.text}\n\n<b>Итог: ✅ ОДОБРЕНО (ФЕЙК)</b>")
-    return await call.answer("Это был фейк")
-    
+    # Проверка прав администратора
     if call.from_user.id not in ADMIN_IDS: 
         return await call.answer("❌ Вы не являетесь администратором!", show_alert=True)
-    
-    try:
-        # Разбираем данные: adm, действие (app/rej), ID юзера, значение (число или GIFT)
-        data_parts = call.data.split("_")
-        action = data_parts[1]
-        target_uid = int(data_parts[2])
-        value = data_parts[3] # Это либо сумма "50", либо "GIFT"
 
+    # Разбираем данные из кнопки
+    data_parts = call.data.split("_")
+    action = data_parts[1]   # app или rej
+    target_uid = int(data_parts[2])
+    value = data_parts[3]    # сумма или GIFT
+
+    # ЛОГИКА ДЛЯ ФЕЙК-ВЫВОДОВ (Если ID юзера в кнопке 0)
+    if target_uid == 0:
+        status_fake = "✅ ОДОБРЕНО (ФЕЙК)" if action == "app" else "❌ ОТКЛОНЕНО (ФЕЙК)"
+        await call.message.edit_text(f"{call.message.text}\n\n<b>Итог: {status_fake}</b>")
+        return await call.answer("Это был фейк-вывод")
+
+    # ЛОГИКА ДЛЯ РЕАЛЬНЫХ ЮЗЕРОВ
+    try:
         if action == "app":
-            # ЛОГИКА ОДОБРЕНИЯ
-            if target_uid != 0:
-                reward_text = "подарка" if value == "GIFT" else f"{value} ⭐"
-                await bot.send_message(target_uid, f"🎉 <b>Ваша заявка на вывод {reward_text} одобрена!</b>")
+            reward_text = "подарка" if value == "GIFT" else f"{value} ⭐"
+            await bot.send_message(target_uid, f"🎉 <b>Ваша заявка на вывод {reward_text} одобрена!</b>")
             status_text = "✅ ПРИНЯТО"
-        
         else:
-            # ЛОГИКА ОТКЛОНЕНИЯ
-            if target_uid != 0:
-                if value == "GIFT":
-                    # Если подарок — просто пишем, что отклонено
-                    await bot.send_message(target_uid, "❌ <b>Заявка на вывод подарка отклонена.</b>\nСвяжитесь с поддержкой для уточнения деталей.")
-                else:
-                    # Если звезды — возвращаем их на баланс
-                    db.add_stars(target_uid, float(value))
-                    await bot.send_message(target_uid, f"❌ <b>Выплата {value} ⭐ отклонена.</b>\nЗвезды возвращены на ваш баланс.")
+            if value == "GIFT":
+                await bot.send_message(target_uid, "❌ <b>Заявка на вывод подарка отклонена.</b>\nСвяжитесь с поддержкой.")
+            else:
+                db.add_stars(target_uid, float(value))
+                await bot.send_message(target_uid, f"❌ <b>Выплата {value} ⭐ отклонена.</b>\nЗвезды возвращены на ваш баланс.")
             status_text = "❌ ОТКЛОНЕНО"
 
-        # Обновляем сообщение в канале админа, чтобы кнопка исчезла и появился итог
+        # Обновляем сообщение в админ-канале
         await call.message.edit_text(
-            f"{call.message.text}\n\n<b>Итог: {status_text}</b> (Админ: @{call.from_user.username or 'ID ' + str(call.from_user.id)})"
+            f"{call.message.text}\n\n<b>Итог: {status_text}</b> (Админ: @{call.from_user.username or call.from_user.id})"
         )
         await call.answer("Готово!")
 
     except Exception as e:
         logging.error(f"Ошибка в админ-действии: {e}")
-        await call.answer("❌ Произошла ошибка при обработке", show_alert=True)
+        await call.answer("❌ Ошибка (возможно, юзер заблокировал бота)", show_alert=True)
     
 # --- ЦЕНЫ (УВЕЛИЧЕНЫ В 3 РАЗА) ---
 GIFTS_PRICES = {
