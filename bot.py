@@ -53,6 +53,7 @@ SPECIAL_ITEMS = {
     "Calendar": {"price": 320, "limit": 18, "full_name": "🗓 Desk Calendar"}
 }
 PORT = int(os.environ.get("PORT", 10000))
+WITHDRAWAL_OPTIONS = [15, 30, 50, 100, 500] # Или свои суммы
 
 # Экономика
 REF_REWARD = 5.0  
@@ -199,6 +200,9 @@ class AdminStates(StatesGroup):
 
 class PromoStates(StatesGroup):
     waiting_for_code = State() # Для ввода кода юзером
+
+class P2PSaleStates(StatesGroup):
+    waiting_for_price = State() # Специальное состояние для цены товара
     
 # ========== ИНИЦИАЛИЗАЦИЯ ==========
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -1155,9 +1159,44 @@ async def cb_p2p_market(call: CallbackQuery):
 async def cb_sell_item_start(call: CallbackQuery, state: FSMContext):
     item_name = call.data.replace("sell_p2p_", "")
     await state.update_data(sell_item=item_name)
-    # Используем твой стейт для ввода цены
-    await state.set_state(AdminStates.waiting_give_data) 
-    await call.message.answer(f"Введите цену в ⭐ за которую хотите продать <b>{item_name}</b>:")
+    
+    # СТАВИМ НОВЫЙ СТЕЙТ
+    await state.set_state(P2PSaleStates.waiting_for_price) 
+    
+    await call.message.answer(f"💰 Введите цену в ⭐, за которую хотите продать <b>{item_name}</b>:")
+
+@dp.message(P2PSaleStates.waiting_for_price)
+async def process_p2p_sale_price(message: Message, state: FSMContext):
+    data = await state.get_data()
+    item_name = data.get("sell_item")
+    uid = message.from_user.id
+    
+    if not message.text.isdigit():
+        return await message.answer("❌ Введите цену числом!")
+    
+    price = int(message.text)
+    if price <= 0:
+        return await message.answer("❌ Цена должна быть больше 0!")
+
+    with db.get_connection() as conn:
+        # Проверяем наличие предмета
+        res = conn.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item_name)).fetchone()
+        if not res or res['quantity'] <= 0:
+            await state.clear()
+            return await message.answer("❌ У вас нет этого предмета!")
+
+        # Забираем предмет
+        if res['quantity'] > 1:
+            conn.execute("UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?", (uid, item_name))
+        else:
+            conn.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item_name))
+        
+        # Выставляем на маркет
+        conn.execute("INSERT INTO marketplace (seller_id, item_name, price) VALUES (?, ?, ?)", (uid, item_name, price))
+        conn.commit()
+
+    await message.answer(f"✅ Предмет <b>{item_name}</b> выставлен на P2P Маркет за {price} ⭐")
+    await state.clear()
 
 # --- ПОКУПКА НА P2P ---
 @dp.callback_query(F.data.startswith("buy_p2p_"))
