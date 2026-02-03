@@ -167,27 +167,24 @@ def init_db(self):
                 amount REAL
             )""")
             conn.commit()
+    
+def get_user(self, user_id: int):
+    with self.get_connection() as conn:
+        return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
 
-    def get_user(self, user_id: int):
-        with self.get_connection() as conn:
-            return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
-
-    def create_user(self, user_id, username, first_name):
-        with self.get_connection() as conn:
-            ref_code = f"ref{user_id}"
-            conn.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, ref_code) VALUES (?, ?, ?, ?)",
-                         (user_id, username, first_name, ref_code))
-            conn.commit()
+def create_user(self, user_id, username, first_name):
+    with self.get_connection() as conn:
+        ref_code = f"ref{user_id}"
+        conn.execute("INSERT OR IGNORE INTO users (user_id, username, first_name, ref_code) VALUES (?, ?, ?, ?)",
+                     (user_id, username, first_name, ref_code))
+        conn.commit()
             
-    def add_stars(self, user_id, amount):
-        with self.get_connection() as conn:
-            # Умножаем на буст только если это НАЧИСЛЕНИЕ (amount > 0)
-            if amount > 0:
-                user = self.get_user(user_id)
-                # Проверка ключей, если используешь sqlite3.Row
-                boost = user['ref_boost'] if user and 'ref_boost' in user.keys() else 1.0
+def add_stars(self, user_id, amount):
+    with self.get_connection() as conn:
+        if amount > 0:
+            user = self.get_user(user_id)
+            boost = user['ref_boost'] if user and 'ref_boost' in user.keys() else 1.0
                 amount = float(amount) * boost
-            
             conn.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
             conn.commit()
 
