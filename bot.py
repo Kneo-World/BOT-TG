@@ -872,15 +872,30 @@ SPECIAL_ITEMS = {
 ITEMS_PER_PAGE = 5
 
 # --- МАГАЗИН ---
+# --- МАГАЗИН ---
 @dp.callback_query(F.data == "shop")
 async def cb_shop_menu(call: CallbackQuery):
     kb = InlineKeyboardBuilder()
+    
+    # КНОПКА В ЭКСКЛЮЗИВНЫЙ МАГАЗИН
+    kb.row(InlineKeyboardButton(text="💎 ЭКСКЛЮЗИВНЫЕ ТОВАРЫ", callback_data="special_shop"))
+    
+    # Кнопка буста
     kb.row(InlineKeyboardButton(text="⚡ Буст рефералов +0.1 (50 ⭐)", callback_data="buy_boost_01"))
+    
+    # Обычные подарки (автоматически добавятся из GIFTS_PRICES)
     for item, price in GIFTS_PRICES.items():
         kb.add(InlineKeyboardButton(text=f"{item} {price}⭐", callback_data=f"buy_g_{item}"))
-    kb.adjust(1, 2)
+    
+    kb.adjust(1, 1, 2) # Выравнивание: Эксклюзив (1), Буст (1), Подарки (по 2 в ряд)
+    
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text("✨ <b>МАГАЗИН</b>", reply_markup=kb.as_markup())
+    
+    await call.message.edit_text(
+        "✨ <b>МАГАЗИН</b>\n\n"
+        "Обычные подарки доступны всегда, а в <b>Эксклюзивном отделе</b> товары ограничены по количеству!", 
+        reply_markup=kb.as_markup()
+    )
 
 # --- ПОКУПКА БУСТА ---
 @dp.callback_query(F.data == "buy_boost_01")
