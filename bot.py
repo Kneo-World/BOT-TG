@@ -184,7 +184,7 @@ def add_stars(self, user_id, amount):
         if amount > 0:
             user = self.get_user(user_id)
             boost = user['ref_boost'] if user and 'ref_boost' in user.keys() else 1.0
-                amount = float(amount) * boost
+            amount = float(amount) * boost
             conn.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
             conn.commit()
 
