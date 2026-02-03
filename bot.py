@@ -76,6 +76,14 @@ class Database:
 
 def init_db(self):
         with self.get_connection() as conn:
+                        conn.execute("DROP TABLE IF EXISTS marketplace") 
+            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  seller_id INTEGER, 
+                  item_name TEXT, 
+                  price REAL)""")
+            conn.commit()
+    
             # 1. Основные таблицы
             conn.execute("""CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, 
@@ -155,15 +163,8 @@ def init_db(self):
                 creator_id INTEGER PRIMARY KEY, 
                 amount REAL
             )""")
-
-            conn.execute("DROP TABLE IF EXISTS marketplace") 
-            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  seller_id INTEGER, 
-                  item_name TEXT, 
-                  price REAL)""")
             conn.commit()
-            
+
     def get_user(self, user_id: int):
         with self.get_connection() as conn:
             return conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
