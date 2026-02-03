@@ -1102,7 +1102,7 @@ async def cb_sold_out(call: CallbackQuery):
 async def buy_special_item(call: CallbackQuery):
     item_key = call.data.split("_")[2] # Ramen, Candle или Calendar
     full_name = {"Ramen": "🍜 Ramen", "Candle": "🕯 B-Day Candle", "Calendar": "🗓 Desk Calendar"}[item_key]
-    price = SPECIAL_ITEMS[item_key]
+    price = SPECIAL_ITEMS[item_key]["price"]
     uid = call.from_user.id
     
     user = db.get_user(uid)
