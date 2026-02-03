@@ -156,6 +156,12 @@ def init_db(self):
                 amount REAL
             )""")
 
+            conn.execute("DROP TABLE IF EXISTS marketplace") 
+            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  seller_id INTEGER, 
+                  item_name TEXT, 
+                  price REAL)""")
             conn.commit()
             
     def get_user(self, user_id: int):
