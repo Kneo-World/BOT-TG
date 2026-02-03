@@ -76,14 +76,17 @@ class Database:
 
 def init_db(self):
         with self.get_connection() as conn:
-                        conn.execute("DROP TABLE IF EXISTS marketplace") 
-            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace 
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                  seller_id INTEGER, 
-                  item_name TEXT, 
-                  price REAL)""")
-            conn.commit()
-    
+            # Все conn.execute должны иметь ОДИНАКОВЫЙ отступ (12 пробелов или 3 таба)
+            
+            # Убираем дубликат и выравниваем:
+            conn.execute("DROP TABLE IF EXISTS marketplace") 
+            conn.execute("""CREATE TABLE IF NOT EXISTS marketplace (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                seller_id INTEGER, 
+                item_name TEXT, 
+                price REAL
+            )""")
+            
             # 1. Основные таблицы
             conn.execute("""CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, 
@@ -97,7 +100,7 @@ def init_db(self):
                 ref_boost REAL DEFAULT 1.0,
                 is_active INTEGER DEFAULT 0,
                 total_earned REAL DEFAULT 0,
-                referred_by INTEGER  -- Добавь это для отслеживания пригласителя
+                referred_by INTEGER
             )""")
 
             # 2. Экономика и Инвентарь
