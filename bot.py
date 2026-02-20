@@ -75,7 +75,7 @@ class Database:
     def _init_postgres(self):
         with self.conn:
             with self.conn.cursor() as cur:
-            cur.execute("""
+                cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,
@@ -89,8 +89,8 @@ class Database:
                     is_active INTEGER DEFAULT 0,
                     total_earned REAL DEFAULT 0,
                     referred_by BIGINT
-                )
-            """)
+                    )
+                    """)
                 # Инвентарь
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS inventory (
