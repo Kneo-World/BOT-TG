@@ -71,27 +71,26 @@ class Database:
         conn = psycopg2.connect(DATABASE_URL, sslmode='require')
         conn.autocommit = False
         return conn
-
+        
     def _init_postgres(self):
-        with self.conn:
-            with self.conn.cursor() as cur:
-                # Таблица пользователей
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id BIGINT PRIMARY KEY,
-                        username TEXT,
-                        first_name TEXT,
-                        stars REAL DEFAULT 0,
-                        referrals INTEGER DEFAULT 0,
-                        last_daily TIMESTAMP,
-                        last_luck TIMESTAMP,
-                        ref_code TEXT UNIQUE,
-                        ref_boost REAL DEFAULT 1.0,
-                        is_active INTEGER DEFAULT 0,
-                        total_earned REAL DEFAULT 0,
-                        referred_by BIGINT
-                    )
-                """)
+    with self.conn:
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    stars REAL DEFAULT 0,
+                    referrals INTEGER DEFAULT 0,
+                    last_daily TIMESTAMP,
+                    last_luck TIMESTAMP,
+                    ref_code TEXT UNIQUE,
+                    ref_boost REAL DEFAULT 1.0,
+                    is_active INTEGER DEFAULT 0,
+                    total_earned REAL DEFAULT 0,
+                    referred_by BIGINT
+                )
+            """)
                 # Инвентарь
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS inventory (
@@ -202,11 +201,6 @@ class Database:
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
-                stars REAL DEFAULT 0,
-                referrals INTEGER DEFAULT 0,
-                ref_boost REAL DEFAULT 1.0,
-                is_active INTEGER DEFAULT 0,
-                total_earned REAL DEFAULT 0
 
     def _init_sqlite(self):
         cursor = self.conn.cursor()
@@ -337,12 +331,7 @@ class Database:
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)')")
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх')")
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр')")
-        stars REAL DEFAULT 0,
-        referrals INTEGER DEFAULT 0,
-        ref_boost REAL DEFAULT 1.0,
-        is_active INTEGER DEFAULT 0,
-        total_earned REAL DEFAULT 0
-        self.conn.commit()
+
 
     def execute(self, query: str, params: tuple = (), fetch: bool = False, fetchone: bool = False):
         """Универсальный метод выполнения запросов (работает и с PostgreSQL, и с SQLite)"""
