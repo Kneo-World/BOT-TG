@@ -113,40 +113,36 @@ def _init_postgres(self):
                         PRIMARY KEY (user_id, item_name)
                         )
                         """)
-                # Маркетплейс P2P
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS marketplace (
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS marketplace (
                         id SERIAL PRIMARY KEY,
                         seller_id BIGINT,
                         item_name TEXT,
                         price REAL
                     )
                 """)
-                # Лотерея
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS lottery (
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS lottery (
                         id INTEGER PRIMARY KEY,
                         pool REAL DEFAULT 0,
                         participants TEXT DEFAULT ''
-                    )
-                """)
-                cur.execute("INSERT INTO lottery (id, pool, participants) VALUES (1, 0, '') ON CONFLICT DO NOTHING")
-                cur.execute("""
+                        )
+                        """)
+            cur.execute("INSERT INTO lottery (id, pool, participants) VALUES (1, 0, '') ON CONFLICT DO NOTHING")
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS lottery_history (
                         user_id BIGINT,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                # Квесты
-                cur.execute("""
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS task_claims (
                         user_id BIGINT,
                         task_id TEXT,
                         PRIMARY KEY (user_id, task_id)
                     )
                 """)
-                # Промокоды
-                cur.execute("""
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS promo (
                         code TEXT PRIMARY KEY,
                         reward_type TEXT,
@@ -154,7 +150,7 @@ def _init_postgres(self):
                         uses INTEGER
                     )
                 """)
-                cur.execute("""
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS promo_history (
                         user_id BIGINT,
                         code TEXT,
@@ -162,7 +158,7 @@ def _init_postgres(self):
                     )
                 """)
                 # Стрики
-                cur.execute("""
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS daily_bonus (
                         user_id BIGINT PRIMARY KEY,
                         last_date TEXT,
@@ -170,14 +166,14 @@ def _init_postgres(self):
                     )
                 """)
                 # Дуэли
-                cur.execute("""
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS active_duels (
                         creator_id BIGINT PRIMARY KEY,
                         amount REAL
                     )
                 """)
                 # Таблица настроек config
-                cur.execute("""
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS config (
                         key TEXT PRIMARY KEY,
                         value TEXT,
@@ -185,7 +181,7 @@ def _init_postgres(self):
                     )
                 """)
                 # Таблица логов админов
-                cur.execute("""
+            cur.execute("""
                     CREATE TABLE IF NOT EXISTS admin_logs (
                         id SERIAL PRIMARY KEY,
                         admin_id BIGINT,
@@ -195,7 +191,7 @@ def _init_postgres(self):
                     )
                 """)
                 # Заполняем config значениями по умолчанию
-                default_config = {
+            default_config = {
                     'ref_reward': ('5.0', 'Награда за активного реферала (звезд)'),
                     'view_reward': ('0.3', 'Награда за просмотр поста'),
                     'daily_min': ('1', 'Минимум ежедневного бонуса'),
@@ -206,14 +202,14 @@ def _init_postgres(self):
                     'withdrawal_options': ('15,25,50,100', 'Доступные суммы вывода через запятую'),
                     'gifts_prices': ('{"🧸 Мишка":45,"❤️ Сердце":45,"🎁 Подарок":75,"🌹 Роза":75,"🍰 Тортик":150,"💐 Букет":150,"🚀 Ракета":150,"🍾 Шампанское":150,"🏆 Кубок":300,"💍 Колечко":300,"💎 Алмаз":300}', 'Цены на подарки (JSON)'),
                     'special_items': ('{"Ramen":{"price":250,"limit":25,"full_name":"🍜 Ramen"},"Candle":{"price":199,"limit":30,"full_name":"🕯 B-Day Candle"},"Calendar":{"price":320,"limit":18,"full_name":"🗓 Desk Calendar"}}', 'Эксклюзивные товары (JSON)'),
-                }
+            }
                 for key, (value, desc) in default_config.items():
                     cur.execute("INSERT INTO config (key, value, description) VALUES (%s, %s, %s) ON CONFLICT (key) DO NOTHING", (key, value, desc))
                 # Глобальные бусты
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальный множитель рефералов') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
+            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальный множитель рефералов') ON CONFLICT DO NOTHING")
+            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
+            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
+            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
 
     def _init_sqlite(self):
         cursor = self.conn.cursor()
