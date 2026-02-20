@@ -2,9 +2,9 @@
 StarsForQuestion - ULTIMATE MONOLITH v10.0 (ПОЛНАЯ ВЕРСИЯ, РУССКИЙ)
 Абсолютно все функции: экономика, рефералы (с бонусом после активации), 
 посты в канал, реалистичные фейки, P2P маркет, лотерея, дуэли, квесты,
-магазин с эксклюзивами, инвентарь, глобальные бусты (админ-абьюзы),
+магазин с эксклюзивами, инвентарь, глобальные бусты (админ-роабьюзы),
 полная настройка через БД, логирование админов, PostgreSQL для Render.
-Все тексты на русском языке, все кнопки работают.
+Все тексты на русском языке, все кнопки работаютт.
 """
 
 import asyncio
@@ -56,6 +56,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")  # для Render PostgreSQL
 
 
 # ========== БАЗА ДАННЫХ (УНИВЕРСАЛЬНЫЙ КЛАСС) ==========
+
 class Database:
     def __init__(self):
         self.use_postgres = DATABASE_URL is not None and PSYCOPG2_AVAILABLE
@@ -71,78 +72,83 @@ class Database:
         conn = psycopg2.connect(DATABASE_URL, sslmode='require')
         conn.autocommit = False
         return conn
-        
-def _init_postgres(self):
-    with self.conn:
-        with self.conn.cursor() as cur:
-            # Создаём таблицу (если не существует)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    stars REAL DEFAULT 0,
-                    referrals INTEGER DEFAULT 0,
-                    last_daily TIMESTAMP,
-                    last_luck TIMESTAMP,
-                    ref_code TEXT UNIQUE,
-                    ref_boost REAL DEFAULT 1.0,
-                    is_active INTEGER DEFAULT 0,
-                    total_earned REAL DEFAULT 0,
-                    referred_by BIGINT
-                )
-            """)
-            # Добавляем недостающие колонки (если их нет)
-            # PostgreSQL поддерживает ADD COLUMN IF NOT EXISTS с версии 9.6
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS stars REAL DEFAULT 0")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrals INTEGER DEFAULT 0")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_daily TIMESTAMP")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_luck TIMESTAMP")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_code TEXT UNIQUE")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_boost REAL DEFAULT 1.0")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 0")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_earned REAL DEFAULT 0")
-            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT")
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS inventory (
+
+    def _init_postgres(self):
+        with self.conn:
+            with self.conn.cursor() as cur:
+                # Таблица пользователей
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY,
+                        username TEXT,
+                        first_name TEXT,
+                        stars REAL DEFAULT 0,
+                        referrals INTEGER DEFAULT 0,
+                        last_daily TIMESTAMP,
+                        last_luck TIMESTAMP,
+                        ref_code TEXT UNIQUE,
+                        ref_boost REAL DEFAULT 1.0,
+                        is_active INTEGER DEFAULT 0,
+                        total_earned REAL DEFAULT 0,
+                        referred_by BIGINT
+                    )
+                """)
+                # Добавляем недостающие колонки (если их нет)
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS stars REAL DEFAULT 0")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrals INTEGER DEFAULT 0")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_daily TIMESTAMP")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_luck TIMESTAMP")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_code TEXT UNIQUE")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_boost REAL DEFAULT 1.0")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 0")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_earned REAL DEFAULT 0")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT")
+
+                # Инвентарь
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS inventory (
                         user_id BIGINT,
                         item_name TEXT,
                         quantity INTEGER DEFAULT 1,
                         PRIMARY KEY (user_id, item_name)
-                        )
-                        """)
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS marketplace (
+                    )
+                """)
+                # Маркетплейс P2P
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS marketplace (
                         id SERIAL PRIMARY KEY,
                         seller_id BIGINT,
                         item_name TEXT,
                         price REAL
                     )
                 """)
-            cur.execute("""
-            CREATE TABLE IF NOT EXISTS lottery (
+                # Лотерея
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS lottery (
                         id INTEGER PRIMARY KEY,
                         pool REAL DEFAULT 0,
                         participants TEXT DEFAULT ''
-                        )
-                        """)
-            cur.execute("INSERT INTO lottery (id, pool, participants) VALUES (1, 0, '') ON CONFLICT DO NOTHING")
-            cur.execute("""
+                    )
+                """)
+                cur.execute("INSERT INTO lottery (id, pool, participants) VALUES (1, 0, '') ON CONFLICT DO NOTHING")
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS lottery_history (
                         user_id BIGINT,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-            cur.execute("""
+                # Квесты
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS task_claims (
                         user_id BIGINT,
                         task_id TEXT,
                         PRIMARY KEY (user_id, task_id)
                     )
                 """)
-            cur.execute("""
+                # Промокоды
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS promo (
                         code TEXT PRIMARY KEY,
                         reward_type TEXT,
@@ -150,7 +156,7 @@ def _init_postgres(self):
                         uses INTEGER
                     )
                 """)
-            cur.execute("""
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS promo_history (
                         user_id BIGINT,
                         code TEXT,
@@ -158,7 +164,7 @@ def _init_postgres(self):
                     )
                 """)
                 # Стрики
-            cur.execute("""
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS daily_bonus (
                         user_id BIGINT PRIMARY KEY,
                         last_date TEXT,
@@ -166,14 +172,14 @@ def _init_postgres(self):
                     )
                 """)
                 # Дуэли
-            cur.execute("""
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS active_duels (
                         creator_id BIGINT PRIMARY KEY,
                         amount REAL
                     )
                 """)
                 # Таблица настроек config
-            cur.execute("""
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS config (
                         key TEXT PRIMARY KEY,
                         value TEXT,
@@ -181,7 +187,7 @@ def _init_postgres(self):
                     )
                 """)
                 # Таблица логов админов
-            cur.execute("""
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS admin_logs (
                         id SERIAL PRIMARY KEY,
                         admin_id BIGINT,
@@ -191,7 +197,7 @@ def _init_postgres(self):
                     )
                 """)
                 # Заполняем config значениями по умолчанию
-            default_config = {
+                default_config = {
                     'ref_reward': ('5.0', 'Награда за активного реферала (звезд)'),
                     'view_reward': ('0.3', 'Награда за просмотр поста'),
                     'daily_min': ('1', 'Минимум ежедневного бонуса'),
@@ -202,9 +208,10 @@ def _init_postgres(self):
                     'withdrawal_options': ('15,25,50,100', 'Доступные суммы вывода через запятую'),
                     'gifts_prices': ('{"🧸 Мишка":45,"❤️ Сердце":45,"🎁 Подарок":75,"🌹 Роза":75,"🍰 Тортик":150,"💐 Букет":150,"🚀 Ракета":150,"🍾 Шампанское":150,"🏆 Кубок":300,"💍 Колечко":300,"💎 Алмаз":300}', 'Цены на подарки (JSON)'),
                     'special_items': ('{"Ramen":{"price":250,"limit":25,"full_name":"🍜 Ramen"},"Candle":{"price":199,"limit":30,"full_name":"🕯 B-Day Candle"},"Calendar":{"price":320,"limit":18,"full_name":"🗓 Desk Calendar"}}', 'Эксклюзивные товары (JSON)'),
-            }
-            for key, (value, desc) in default_config.items():
-                cur.execute("INSERT INTO config (key, value, description) VALUES (%s, %s, %s) ON CONFLICT (key) DO NOTHING", (key, value, desc))
+                }
+                for key, (value, desc) in default_config.items():
+                    cur.execute("INSERT INTO config (key, value, description) VALUES (%s, %s, %s) ON CONFLICT (key) DO NOTHING", (key, value, desc))
+                # Глобальные бусты
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальный множитель рефералов') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
@@ -339,12 +346,11 @@ def _init_postgres(self):
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)')")
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх')")
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр')")
-
+        self.conn.commit()
 
     def execute(self, query: str, params: tuple = (), fetch: bool = False, fetchone: bool = False):
-        """Универсальный метод выполнения запросов (работает и с PostgreSQL, и с SQLite)"""
+        """Универсальный метод выполнения запросов"""
         if self.use_postgres:
-            # Заменяем ? на %s для совместимости
             query = query.replace('?', '%s')
             with self.conn:
                 with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -365,10 +371,29 @@ def _init_postgres(self):
             self.conn.commit()
             return None
 
-    # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ ==========
     def get_user(self, user_id: int) -> Optional[Dict]:
         row = self.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
         return dict(row) if row else None
+
+    def get_user_safe(self, user_id: int) -> Optional[Dict]:
+        """Возвращает пользователя со значениями по умолчанию для отсутствующих полей"""
+        user = self.get_user(user_id)
+        if not user:
+            return None
+        defaults = {
+            'stars': 0.0,
+            'referrals': 0,
+            'last_daily': None,
+            'last_luck': None,
+            'ref_boost': 1.0,
+            'is_active': 0,
+            'total_earned': 0.0,
+            'referred_by': None
+        }
+        for key, default_value in defaults.items():
+            if key not in user:
+                user[key] = default_value
+        return user
 
     def create_user(self, user_id: int, username: str, first_name: str, referred_by: int = None):
         ref_code = f"ref{user_id}"
@@ -378,36 +403,28 @@ def _init_postgres(self):
         )
 
     def add_stars(self, user_id: int, amount: float):
-        """Добавляет звезды, обновляет total_earned и активирует реферала при достижении 1.0"""
         if amount == 0:
             return
-        # Если добавляем положительную сумму, учитываем персональный буст
         if amount > 0:
-            user = self.get_user(user_id)
+            user = self.get_user_safe(user_id)
             if user:
                 boost = user.get('ref_boost', 1.0)
                 amount = amount * boost
-            # Обновляем звезды
             self.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
-            # Обновляем total_earned и проверяем активацию
             self.update_user_activity(user_id, amount)
         else:
-            # Трата – просто снимаем звезды (буст не применяется)
             self.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
 
     def update_user_activity(self, user_id: int, earned: float):
-        """Обновляет total_earned и проверяет активацию реферала"""
         self.execute("UPDATE users SET total_earned = total_earned + ? WHERE user_id = ?", (earned, user_id))
-        user = self.get_user(user_id)
+        user = self.get_user_safe(user_id)
         if user and user['total_earned'] >= 1.0 and not user['is_active']:
             self.execute("UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
-            # Начислить бонус рефереру, если есть
             if user['referred_by']:
                 ref_reward = float(self.get_config('ref_reward', 5.0))
                 global_mult = self.get_global_boost('ref')
                 self.add_stars(user['referred_by'], ref_reward * global_mult)
 
-    # ========== РАБОТА С КОНФИГОМ ==========
     def get_config(self, key: str, default: Any = None) -> Any:
         row = self.execute("SELECT value FROM config WHERE key = ?", (key,), fetchone=True)
         if row:
@@ -433,9 +450,7 @@ def _init_postgres(self):
         opt = self.get_config('withdrawal_options', '15,25,50,100')
         return [int(x.strip()) for x in opt.split(',') if x.strip()]
 
-    # ========== ГЛОБАЛЬНЫЕ БУСТЫ ==========
     def get_global_boost(self, boost_type: str) -> float:
-        """Возвращает множитель глобального буста (если активен)"""
         mult_key = f'global_{boost_type}_mult'
         until_key = f'global_{boost_type}_until'
         mult = float(self.get_config(mult_key, 1.0))
@@ -444,7 +459,6 @@ def _init_postgres(self):
             try:
                 until = datetime.fromisoformat(until_str)
                 if datetime.utcnow() > until:
-                    # Буст просрочен – сбрасываем
                     self.set_config(mult_key, '1.0')
                     self.set_config(until_key, '')
                     return 1.0
@@ -453,7 +467,6 @@ def _init_postgres(self):
         return mult
 
     def set_global_boost(self, boost_type: str, multiplier: float, duration_seconds: int = None):
-        """Активировать глобальный буст на определённое время (если duration задан) или навсегда"""
         self.set_config(f'global_{boost_type}_mult', str(multiplier))
         if duration_seconds:
             until = (datetime.utcnow() + timedelta(seconds=duration_seconds)).isoformat()
@@ -465,10 +478,8 @@ def _init_postgres(self):
         self.set_config(f'global_{boost_type}_mult', '1.0')
         self.set_config(f'global_{boost_type}_until', '')
 
-    # ========== ЛОГИ АДМИНОВ ==========
     def log_admin(self, admin_id: int, action: str, details: str = ''):
         self.execute("INSERT INTO admin_logs (admin_id, action, details) VALUES (?, ?, ?)", (admin_id, action, details))
-
 
 # ========== ИНИЦИАЛИЗАЦИЯ БД ==========
 db = Database()
