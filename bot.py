@@ -595,9 +595,11 @@ async def cb_menu(call: CallbackQuery):
 
 @dp.callback_query(F.data == "profile")
 async def cb_profile(call: CallbackQuery):
+    logging.info(f"Profile callback from {call.from_user.id}")
+    await call.answer()
     u = db.get_user(call.from_user.id)
     if not u:
-        return await call.answer("❌ Ошибка: вас нет в базе. Напишите /start", show_alert=True)
+        return await call.message.answer("❌ Ошибка: вас нет в базе. Напишите /start")
     text = (
         f"👤 <b>Профиль</b>\n\n"
         f"🆔 ID: <code>{u['user_id']}</code>\n"
@@ -607,10 +609,16 @@ async def cb_profile(call: CallbackQuery):
         f"⚡ Персональный буст: x{u['ref_boost']:.1f}"
     )
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
-    await call.message.edit_text(text, reply_markup=kb)
+    try:
+        await call.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logging.error(f"Error editing message in profile: {e}")
+        await call.message.answer(text, reply_markup=kb)
 
 @dp.callback_query(F.data == "referrals")
 async def cb_referrals(call: CallbackQuery):
+    logging.info(f"Referrals callback from {call.from_user.id}")
+    await call.answer()
     u = db.get_user(call.from_user.id)
     if not u:
         return
@@ -623,7 +631,11 @@ async def cb_referrals(call: CallbackQuery):
         f"🔗 Твоя реферальная ссылка:\n<code>{ref_link}</code>"
     )
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
-    await call.message.edit_text(text, reply_markup=kb)
+    try:
+        await call.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logging.error(f"Error editing message in referrals: {e}")
+        await call.message.answer(text, reply_markup=kb)
 
 @dp.callback_query(F.data == "daily")
 async def cb_daily(call: CallbackQuery):
@@ -655,6 +667,8 @@ async def cb_daily(call: CallbackQuery):
 
 @dp.callback_query(F.data == "luck")
 async def cb_luck(call: CallbackQuery):
+    logging.info(f"Luck callback from {call.from_user.id}")
+    await call.answer()
     uid = call.from_user.id
     user = db.get_user(uid)
     now = datetime.now()
@@ -671,29 +685,26 @@ async def cb_luck(call: CallbackQuery):
     luck_min = float(db.get_config('luck_min', 0))
     luck_max = float(db.get_config('luck_max', 5))
     win = round(random.uniform(luck_min, luck_max), 2)
-    # Учитываем глобальный буст игр
     game_boost = db.get_global_boost('game')
     win *= game_boost
     db.add_stars(uid, win)
     db.execute("UPDATE users SET last_luck = ? WHERE user_id = ?", (now.isoformat(), uid))
     await call.answer(f"🎰 +{win:.2f} ⭐", show_alert=True)
-    await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
+    try:
+        await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
+    except Exception as e:
+        logging.error(f"Error editing message in luck: {e}")
+
 
 # ========== КВЕСТЫ ==========
 @dp.callback_query(F.data == "tasks")
 async def cb_tasks(call: CallbackQuery):
+    logging.info(f"Tasks callback from {call.from_user.id}")
+    await call.answer()
     uid = call.from_user.id
-    # Активные рефералы (те, кто заработал ≥1)
-    row = db.execute(
-        "SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0",
-        (uid,), fetchone=True
-    )
+    row = db.execute("SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0", (uid,), fetchone=True)
     active_refs = row['cnt'] if row else 0
-    # Количество купленных лотерейных билетов
-    row = db.execute(
-        "SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?",
-        (uid,), fetchone=True
-    )
+    row = db.execute("SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?", (uid,), fetchone=True)
     tickets_bought = row['cnt'] if row else 0
 
     kb = InlineKeyboardBuilder()
@@ -704,13 +715,24 @@ async def cb_tasks(call: CallbackQuery):
     kb.row(InlineKeyboardButton(text="📸 Отправить видео-отзыв (100 ⭐)", url=f"https://t.me/{SUPPORT_USERNAME.replace('@','')}"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
 
-    await call.message.edit_text(
-        "🎯 <b>ЗАДАНИЯ И КВЕСТЫ</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "💰 Забирай награды за активность!\n"
-        "Награды начисляются мгновенно.",
-        reply_markup=kb.as_markup()
-    )
+    try:
+        await call.message.edit_text(
+            "🎯 <b>ЗАДАНИЯ И КВЕСТЫ</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💰 Забирай награды за активность!\n"
+            "Награды начисляются мгновенно.",
+            reply_markup=kb.as_markup()
+        )
+    except Exception as e:
+        logging.error(f"Error editing message in tasks: {e}")
+        await call.message.answer(
+            "🎯 <b>ЗАДАНИЯ И КВЕСТЫ</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💰 Забирай награды за активность!\n"
+            "Награды начисляются мгновенно.",
+            reply_markup=kb.as_markup()
+        )
+
 
 @dp.callback_query(F.data.startswith("claim_task_"))
 async def claim_task(call: CallbackQuery):
@@ -826,17 +848,20 @@ async def cb_buy_ticket(call: CallbackQuery):
 # ========== ТОП ==========
 @dp.callback_query(F.data == "top")
 async def cb_top(call: CallbackQuery):
-    rows = db.execute(
-        "SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10",
-        fetch=True
-    )
+    logging.info(f"Top callback from {call.from_user.id}")
+    await call.answer()
+    rows = db.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10", fetch=True)
     text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
     for i, row in enumerate(rows, 1):
         name = row['first_name'][:3] + "***" if row['first_name'] else "***"
         stars = float(row['stars'])
         text += f"{i}. {name} — <b>{stars:.1f} ⭐</b>\n"
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
-    await call.message.edit_text(text, reply_markup=kb)
+    try:
+        await call.message.edit_text(text, reply_markup=kb)
+    except Exception as e:
+        logging.error(f"Error editing message in top: {e}")
+        await call.message.answer(text, reply_markup=kb)
 
 # ========== ВЫВОД СРЕДСТВ ==========
 @dp.callback_query(F.data == "withdraw")
