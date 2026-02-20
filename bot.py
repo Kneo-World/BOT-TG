@@ -203,13 +203,12 @@ def _init_postgres(self):
                     'gifts_prices': ('{"🧸 Мишка":45,"❤️ Сердце":45,"🎁 Подарок":75,"🌹 Роза":75,"🍰 Тортик":150,"💐 Букет":150,"🚀 Ракета":150,"🍾 Шампанское":150,"🏆 Кубок":300,"💍 Колечко":300,"💎 Алмаз":300}', 'Цены на подарки (JSON)'),
                     'special_items': ('{"Ramen":{"price":250,"limit":25,"full_name":"🍜 Ramen"},"Candle":{"price":199,"limit":30,"full_name":"🕯 B-Day Candle"},"Calendar":{"price":320,"limit":18,"full_name":"🗓 Desk Calendar"}}', 'Эксклюзивные товары (JSON)'),
             }
-                for key, (value, desc) in default_config.items():
-                    cur.execute("INSERT INTO config (key, value, description) VALUES (%s, %s, %s) ON CONFLICT (key) DO NOTHING", (key, value, desc))
-                # Глобальные бусты
-            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальный множитель рефералов') ON CONFLICT DO NOTHING")
-            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
-            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
-            cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
+            for key, (value, desc) in default_config.items():
+                cur.execute("INSERT INTO config (key, value, description) VALUES (%s, %s, %s) ON CONFLICT (key) DO NOTHING", (key, value, desc))
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальный множитель рефералов') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
 
     def _init_sqlite(self):
         cursor = self.conn.cursor()
