@@ -72,10 +72,11 @@ class Database:
         conn.autocommit = False
         return conn
         
-    def _init_postgres(self):
-        with self.conn:
-            with self.conn.cursor() as cur:
-                cur.execute("""
+def _init_postgres(self):
+    with self.conn:
+        with self.conn.cursor() as cur:
+            # Создаём таблицу (если не существует)
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
                     username TEXT,
@@ -89,8 +90,23 @@ class Database:
                     is_active INTEGER DEFAULT 0,
                     total_earned REAL DEFAULT 0,
                     referred_by BIGINT
-                    )
-                    """)
+                )
+            """)
+            # Добавляем недостающие колонки (если их нет)
+            # PostgreSQL поддерживает ADD COLUMN IF NOT EXISTS с версии 9.6
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS stars REAL DEFAULT 0")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrals INTEGER DEFAULT 0")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_daily TIMESTAMP")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_luck TIMESTAMP")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_code TEXT UNIQUE")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ref_boost REAL DEFAULT 1.0")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 0")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_earned REAL DEFAULT 0")
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT")
+            # остальные таблицы...
+            
                 # Инвентарь
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS inventory (
@@ -863,8 +879,12 @@ async def cb_top(call: CallbackQuery):
     rows = db.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10", fetch=True)
     text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
     for i, row in enumerate(rows, 1):
-        name = row.get('first_name', '***')[:3] + "***"
-        stars = float(row.get('stars', 0))
+        name = row['first_name'] or "***"  # если NULL, используем "***"
+        if len(name) > 3:
+            name = name[:3] + "***"
+        else:
+            name = name + "***"
+        stars = float(row['stars']) if row['stars'] is not None else 0
         text += f"{i}. {name} — <b>{stars:.1f} ⭐</b>\n"
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
     try:
