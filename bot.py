@@ -1,5 +1,5 @@
 """
-StarsForQuestion - ULTIMATE MONOLITH v8.0 (ПОВНА ВЕРСІЯ)
+StarsForQuestion - ULTIMATE MONOLITH v9.0 (ПОВНА ВЕРСІЯ)
 Абсолютно всі функції: економіка, реферали (з бонусом після активації), 
 пости в канал, реалістичні фейки, P2P маркет, лотерея, дуелі, квести,
 магазин з ексклюзивами, інвентар, глобальні бусти (адмін-абʼюзи),
@@ -336,6 +336,8 @@ class Database:
     def execute(self, query: str, params: tuple = (), fetch: bool = False, fetchone: bool = False):
         """Універсальний метод виконання запитів (працює і з PostgreSQL, і з SQLite)"""
         if self.use_postgres:
+            # Замінюємо ? на %s для сумісності
+            query = query.replace('?', '%s')
             with self.conn:
                 with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                     cur.execute(query, params)
@@ -357,23 +359,18 @@ class Database:
 
     # ========== МЕТОДИ ДЛЯ РОБОТИ З КОРИСТУВАЧАМИ ==========
     def get_user(self, user_id: int) -> Optional[Dict]:
-        row = self.execute("SELECT * FROM users WHERE user_id = %s" if self.use_postgres else "SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+        row = self.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
         return dict(row) if row else None
 
     def create_user(self, user_id: int, username: str, first_name: str, referred_by: int = None):
         ref_code = f"ref{user_id}"
-        if self.use_postgres:
-            self.execute(
-                "INSERT INTO users (user_id, username, first_name, ref_code, referred_by) VALUES (%s, %s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING",
-                (user_id, username, first_name, ref_code, referred_by)
-            )
-        else:
-            self.execute(
-                "INSERT OR IGNORE INTO users (user_id, username, first_name, ref_code, referred_by) VALUES (?, ?, ?, ?, ?)",
-                (user_id, username, first_name, ref_code, referred_by)
-            )
+        self.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, first_name, ref_code, referred_by) VALUES (?, ?, ?, ?, ?)",
+            (user_id, username, first_name, ref_code, referred_by)
+        )
 
     def add_stars(self, user_id: int, amount: float):
+        """Додає зірки, оновлює total_earned та активує реферала при досягненні 1.0"""
         if amount == 0:
             return
         # Якщо додаємо позитивну суму, враховуємо персональний буст
@@ -382,16 +379,20 @@ class Database:
             if user:
                 boost = user.get('ref_boost', 1.0)
                 amount = amount * boost
-        self.execute("UPDATE users SET stars = stars + %s WHERE user_id = %s" if self.use_postgres else "UPDATE users SET stars = stars + ? WHERE user_id = ?",
-                     (amount, user_id))
+            # Оновлюємо зірки
+            self.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
+            # Оновлюємо total_earned та перевіряємо активацію
+            self.update_user_activity(user_id, amount)
+        else:
+            # Витрата – просто знімаємо зірки
+            self.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
 
     def update_user_activity(self, user_id: int, earned: float):
         """Оновлює total_earned та перевіряє активацію реферала"""
-        self.execute("UPDATE users SET total_earned = total_earned + %s WHERE user_id = %s" if self.use_postgres else "UPDATE users SET total_earned = total_earned + ? WHERE user_id = ?",
-                     (earned, user_id))
+        self.execute("UPDATE users SET total_earned = total_earned + ? WHERE user_id = ?", (earned, user_id))
         user = self.get_user(user_id)
         if user and user['total_earned'] >= 1.0 and not user['is_active']:
-            self.execute("UPDATE users SET is_active = 1 WHERE user_id = %s" if self.use_postgres else "UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
+            self.execute("UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
             # Нарахувати бонус рефереру, якщо є
             if user['referred_by']:
                 ref_reward = float(self.get_config('ref_reward', 5.0))
@@ -400,16 +401,13 @@ class Database:
 
     # ========== РОБОТА З КОНФІГОМ ==========
     def get_config(self, key: str, default: Any = None) -> Any:
-        row = self.execute("SELECT value FROM config WHERE key = %s" if self.use_postgres else "SELECT value FROM config WHERE key = ?", (key,), fetchone=True)
+        row = self.execute("SELECT value FROM config WHERE key = ?", (key,), fetchone=True)
         if row:
             return row['value']
         return default
 
     def set_config(self, key: str, value: str):
-        if self.use_postgres:
-            self.execute("INSERT INTO config (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", (key, value))
-        else:
-            self.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
+        self.execute("INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)", (key, value))
 
     def get_gifts_prices(self) -> dict:
         try:
@@ -461,10 +459,7 @@ class Database:
 
     # ========== ЛОГИ АДМІНІВ ==========
     def log_admin(self, admin_id: int, action: str, details: str = ''):
-        if self.use_postgres:
-            self.execute("INSERT INTO admin_logs (admin_id, action, details) VALUES (%s, %s, %s)", (admin_id, action, details))
-        else:
-            self.execute("INSERT INTO admin_logs (admin_id, action, details) VALUES (?, ?, ?)", (admin_id, action, details))
+        self.execute("INSERT INTO admin_logs (admin_id, action, details) VALUES (?, ?, ?)", (admin_id, action, details))
 
 
 # ========== ІНІЦІАЛІЗАЦІЯ БД ==========
@@ -531,6 +526,9 @@ def get_main_kb(uid: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🏆 ТОП", callback_data="top"),
         InlineKeyboardButton(text="👤 Профіль", callback_data="profile"),
         InlineKeyboardButton(text="🎁 Промокод", callback_data="use_promo")
+    )
+    builder.row(
+        InlineKeyboardButton(text="💸 Вивести", callback_data="withdraw")
     )
     if uid in ADMIN_IDS:
         builder.row(InlineKeyboardButton(text="👑 Адмін Панель", callback_data="admin_panel"))
@@ -629,21 +627,29 @@ async def cb_referrals(call: CallbackQuery):
 @dp.callback_query(F.data == "daily")
 async def cb_daily(call: CallbackQuery):
     uid = call.from_user.id
-    user = db.get_user(uid)
     now = datetime.now()
-    if user['last_daily']:
-        try:
-            last = datetime.fromisoformat(user['last_daily'])
-            if (now - last).days < 1:
-                return await call.answer("⏳ Тільки раз на день!", show_alert=True)
-        except:
-            pass
-    daily_min = float(db.get_config('daily_min', 1))
-    daily_max = float(db.get_config('daily_max', 3))
-    rew = round(random.uniform(daily_min, daily_max), 2)
-    db.add_stars(uid, rew)
-    db.execute("UPDATE users SET last_daily = ? WHERE user_id = ?", (now.isoformat(), uid))
-    await call.answer(f"🎁 +{rew} ⭐", show_alert=True)
+    today_str = now.strftime("%Y-%m-%d")
+
+    # Отримуємо поточний стрік
+    row = db.execute("SELECT last_date, streak FROM daily_bonus WHERE user_id = ?", (uid,), fetchone=True)
+    if row:
+        last_date = datetime.strptime(row['last_date'], "%Y-%m-%d")
+        delta = (now.date() - last_date.date()).days
+        if delta == 0:
+            return await call.answer("❌ Бонус вже отримано! Приходь завтра.", show_alert=True)
+        elif delta == 1:
+            new_streak = min(row['streak'] + 1, 7)
+        else:
+            new_streak = 1
+        db.execute("UPDATE daily_bonus SET last_date = ?, streak = ? WHERE user_id = ?", (today_str, new_streak, uid))
+    else:
+        new_streak = 1
+        db.execute("INSERT INTO daily_bonus (user_id, last_date, streak) VALUES (?, ?, ?)", (uid, today_str, new_streak))
+
+    # Розмір бонусу: 0.1 * стрік (наприклад)
+    reward = round(0.1 * new_streak, 2)
+    db.add_stars(uid, reward)
+    await call.answer(f"✅ День {new_streak}! Отримано: {reward} ⭐", show_alert=True)
     await call.message.edit_text("⭐ <b>Головне меню</b>", reply_markup=get_main_kb(uid))
 
 @dp.callback_query(F.data == "luck")
@@ -677,21 +683,17 @@ async def cb_luck(call: CallbackQuery):
 async def cb_tasks(call: CallbackQuery):
     uid = call.from_user.id
     # Активні реферали (ті, хто заробив ≥1)
-    active_refs = db.execute(
+    row = db.execute(
         "SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0",
         (uid,), fetchone=True
-    )['cnt'] if db.use_postgres else db.execute(
-        "SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0",
-        (uid,), fetchone=True
-    )[0]
+    )
+    active_refs = row['cnt'] if row else 0
     # Кількість куплених лотерейних білетів
-    tickets_bought = db.execute(
+    row = db.execute(
         "SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?",
         (uid,), fetchone=True
-    )['cnt'] if db.use_postgres else db.execute(
-        "SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?",
-        (uid,), fetchone=True
-    )[0]
+    )
+    tickets_bought = row['cnt'] if row else 0
 
     kb = InlineKeyboardBuilder()
     status1 = "✅ Готово" if active_refs >= 3 else f"⏳ {active_refs}/3"
@@ -723,24 +725,20 @@ async def claim_task(call: CallbackQuery):
         return await call.answer("❌ Ви вже отримали нагороду за цей квест!", show_alert=True)
 
     if task_num == "1":
-        active_refs = db.execute(
+        row = db.execute(
             "SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0",
             (uid,), fetchone=True
-        )['cnt'] if db.use_postgres else db.execute(
-            "SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0",
-            (uid,), fetchone=True
-        )[0]
+        )
+        active_refs = row['cnt'] if row else 0
         if active_refs < 3:
             return await call.answer("❌ Потрібно 3 активних реферала!", show_alert=True)
         reward = 15.0
     elif task_num == "2":
-        tickets_bought = db.execute(
+        row = db.execute(
             "SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?",
             (uid,), fetchone=True
-        )['cnt'] if db.use_postgres else db.execute(
-            "SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?",
-            (uid,), fetchone=True
-        )[0]
+        )
+        tickets_bought = row['cnt'] if row else 0
         if tickets_bought < 5:
             return await call.answer("❌ Потрібно купити 5 білетів!", show_alert=True)
         reward = 3.0
@@ -1436,7 +1434,7 @@ async def adm_config_menu(call: CallbackQuery):
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
     await call.message.edit_text("⚙️ <b>Налаштування бота</b>\nОберіть параметр для зміни:", reply_markup=kb.as_markup())
 
-# Редагування конкретних ключів (приклад для ref_reward)
+# Редагування реферальної нагороди
 @dp.callback_query(F.data == "edit_config_ref_reward")
 async def edit_ref_reward(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
@@ -1446,45 +1444,101 @@ async def edit_ref_reward(call: CallbackQuery, state: FSMContext):
     await state.update_data(config_key='ref_reward')
     await call.message.answer(f"Поточне значення: <b>{current}</b>\nВведіть нову нагороду за реферала (число):")
 
+@dp.callback_query(F.data == "edit_config_view_reward")
+async def edit_view_reward(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    current = db.get_config('view_reward', '0.3')
+    await state.set_state(AdminStates.waiting_config_value)
+    await state.update_data(config_key='view_reward')
+    await call.message.answer(f"Поточне значення: <b>{current}</b>\nВведіть нову нагороду за перегляд посту (число):")
+
+@dp.callback_query(F.data == "edit_config_daily")
+async def edit_daily(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    current_min = db.get_config('daily_min', '1')
+    current_max = db.get_config('daily_max', '3')
+    await state.set_state(AdminStates.waiting_config_value)
+    await state.update_data(config_key='daily')
+    await call.message.answer(
+        f"Поточні значення: мін {current_min}, макс {current_max}\n"
+        "Введіть нові мінімум і максимум через пробіл (наприклад: 2 5):"
+    )
+
+@dp.callback_query(F.data == "edit_config_luck")
+async def edit_luck(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    current_min = db.get_config('luck_min', '0')
+    current_max = db.get_config('luck_max', '5')
+    current_cd = db.get_config('luck_cooldown', '21600')
+    await state.set_state(AdminStates.waiting_config_value)
+    await state.update_data(config_key='luck')
+    await call.message.answer(
+        f"Поточні значення: мін {current_min}, макс {current_max}, кулдаун {current_cd} сек\n"
+        "Введіть нові мінімум, максимум і кулдаун через пробіл (наприклад: 1 10 3600):"
+    )
+
+@dp.callback_query(F.data == "edit_config_withdraw")
+async def edit_withdraw(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    current = db.get_config('withdrawal_options', '15,25,50,100')
+    await state.set_state(AdminStates.waiting_config_value)
+    await state.update_data(config_key='withdrawal_options')
+    await call.message.answer(
+        f"Поточні суми: {current}\n"
+        "Введіть нові суми через кому (наприклад: 10,20,30,50,100):"
+    )
+
 @dp.message(AdminStates.waiting_config_value)
 async def set_config_value(message: Message, state: FSMContext):
     data = await state.get_data()
     key = data.get('config_key')
+    text = message.text.strip()
     try:
-        new_val = float(message.text)
-        db.set_config(key, str(new_val))
-        await message.answer(f"✅ Параметр <b>{key}</b> змінено на {new_val}")
-        db.log_admin(message.from_user.id, "change_config", f"{key} = {new_val}")
-    except:
-        await message.answer("❌ Введіть коректне число!")
+        if key == 'ref_reward' or key == 'view_reward':
+            new_val = float(text)
+            db.set_config(key, str(new_val))
+            await message.answer(f"✅ Параметр <b>{key}</b> змінено на {new_val}")
+        elif key == 'daily':
+            parts = text.split()
+            if len(parts) != 2:
+                raise ValueError
+            min_val = float(parts[0])
+            max_val = float(parts[1])
+            db.set_config('daily_min', str(min_val))
+            db.set_config('daily_max', str(max_val))
+            await message.answer(f"✅ Щоденний бонус змінено: мін {min_val}, макс {max_val}")
+        elif key == 'luck':
+            parts = text.split()
+            if len(parts) != 3:
+                raise ValueError
+            min_val = float(parts[0])
+            max_val = float(parts[1])
+            cd = int(parts[2])
+            db.set_config('luck_min', str(min_val))
+            db.set_config('luck_max', str(max_val))
+            db.set_config('luck_cooldown', str(cd))
+            await message.answer(f"✅ Удачу змінено: мін {min_val}, макс {max_val}, кулдаун {cd} сек")
+        elif key == 'withdrawal_options':
+            # перевіряємо, що це числа через кому
+            options = [int(x.strip()) for x in text.split(',') if x.strip()]
+            if not options:
+                raise ValueError
+            db.set_config('withdrawal_options', ','.join(str(x) for x in options))
+            await message.answer(f"✅ Суми виведення змінено: {', '.join(str(x) for x in options)}")
+        else:
+            await message.answer("❌ Невідомий параметр")
+            await state.clear()
+            return
+        db.log_admin(message.from_user.id, "change_config", f"{key} = {text}")
+    except Exception:
+        await message.answer("❌ Помилка введення! Перевірте формат.")
+        return
     await state.clear()
     await adm_config_menu(await message.answer("⚙️ Налаштування", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
-
-# Аналогічно можна додати інші обробники для daily, luck, withdraw тощо.
-# Для спрощення реалізуємо універсальний редактор через FSM з різними ключами.
-
-# Універсальний редактор (для простоти, можна розширити)
-@dp.callback_query(F.data.startswith("edit_config_"))
-async def edit_config_generic(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
-        return
-    key = call.data.replace("edit_config_", "")
-    # Мапа ключів
-    key_map = {
-        'ref_reward': 'ref_reward',
-        'view_reward': 'view_reward',
-        'daily': 'daily',  # потребує окремого діалогу
-        'luck': 'luck',
-        'withdraw': 'withdrawal_options'
-    }
-    if key == 'ref_reward':
-        await edit_ref_reward(call, state)
-    elif key == 'view_reward':
-        current = db.get_config('view_reward', '0.3')
-        await state.set_state(AdminStates.waiting_config_value)
-        await state.update_data(config_key='view_reward')
-        await call.message.answer(f"Поточне значення: <b>{current}</b>\nВведіть нову нагороду за перегляд посту:")
-    # Додайте інші за потреби
 
 # --- Глобальні бусти ---
 @dp.callback_query(F.data == "a_global_boost_menu")
@@ -1559,11 +1613,43 @@ async def set_gift_price(message: Message, state: FSMContext):
     await state.clear()
     await adm_config_menu(await message.answer("⚙️ Налаштування", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
-# --- Редагування ексклюзивних товарів (аналогічно) ---
+# --- Редагування ексклюзивних товарів ---
 @dp.callback_query(F.data == "a_edit_specials")
 async def adm_edit_specials(call: CallbackQuery, state: FSMContext):
-    # Можна реалізувати подібно
-    await call.answer("Функція в розробці", show_alert=True)
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    specials = db.get_special_items()
+    text = "📦 <b>Ексклюзивні товари (поточні ліміти та ціни):</b>\n"
+    for key, info in specials.items():
+        text += f"{info['full_name']}: ціна {info['price']} ⭐, ліміт {info['limit']}\n"
+    text += "\nВведіть ключ товару (Ramen/Candle/Calendar), нову ціну і новий ліміт через пробіл.\n"
+    text += "Приклад: Ramen 300 20"
+    await state.set_state(AdminStates.waiting_special_field)
+    await call.message.edit_text(text)
+
+@dp.message(AdminStates.waiting_special_field)
+async def set_special_item(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    try:
+        parts = message.text.split()
+        if len(parts) != 3:
+            return await message.answer("❌ Формат: ключ ціна ліміт")
+        key = parts[0].strip()
+        price = float(parts[1])
+        limit = int(parts[2])
+        specials = db.get_special_items()
+        if key not in specials:
+            return await message.answer("❌ Ключ не знайдено! Доступні: Ramen, Candle, Calendar")
+        specials[key]['price'] = price
+        specials[key]['limit'] = limit
+        db.set_config('special_items', json.dumps(specials, ensure_ascii=False))
+        await message.answer(f"✅ Товар <b>{specials[key]['full_name']}</b> оновлено: ціна {price}, ліміт {limit}")
+        db.log_admin(message.from_user.id, "edit_special", f"{key} price={price} limit={limit}")
+    except Exception as e:
+        await message.answer(f"❌ Помилка: {e}")
+    await state.clear()
+    await adm_config_menu(await message.answer("⚙️ Налаштування", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
 # ========== ОБРОБКА АДМІН-РІШЕНЬ ПО ЗАЯВКАХ ==========
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
