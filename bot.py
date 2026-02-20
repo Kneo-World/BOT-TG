@@ -73,8 +73,8 @@ class Database:
         return conn
         
     def _init_postgres(self):
-    with self.conn:
-        with self.conn.cursor() as cur:
+        with self.conn:
+            with self.conn.cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
