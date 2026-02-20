@@ -202,6 +202,11 @@ class Database:
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
+                stars REAL DEFAULT 0,
+                referrals INTEGER DEFAULT 0,
+                ref_boost REAL DEFAULT 1.0,
+                is_active INTEGER DEFAULT 0,
+                total_earned REAL DEFAULT 0
 
     def _init_sqlite(self):
         cursor = self.conn.cursor()
@@ -332,6 +337,11 @@ class Database:
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)')")
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх')")
         cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр')")
+        stars REAL DEFAULT 0,
+        referrals INTEGER DEFAULT 0,
+        ref_boost REAL DEFAULT 1.0,
+        is_active INTEGER DEFAULT 0,
+        total_earned REAL DEFAULT 0
         self.conn.commit()
 
     def execute(self, query: str, params: tuple = (), fetch: bool = False, fetchone: bool = False):
@@ -600,13 +610,20 @@ async def cb_profile(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
     if not u:
         return await call.message.answer("❌ Ошибка: вас нет в базе. Напишите /start")
+    
+    stars = float(u.get('stars', 0))
+    referrals = int(u.get('referrals', 0))
+    total_earned = float(u.get('total_earned', 0))
+    ref_boost = float(u.get('ref_boost', 1.0))
+    user_id = u.get('user_id', call.from_user.id)
+    
     text = (
         f"👤 <b>Профиль</b>\n\n"
-        f"🆔 ID: <code>{u['user_id']}</code>\n"
-        f"⭐ Баланс: <b>{u['stars']:.2f} ⭐</b>\n"
-        f"👥 Рефералов: {u['referrals']}\n"
-        f"📈 Всего заработано: {u['total_earned']:.2f} ⭐\n"
-        f"⚡ Персональный буст: x{u['ref_boost']:.1f}"
+        f"🆔 ID: <code>{user_id}</code>\n"
+        f"⭐ Баланс: <b>{stars:.2f} ⭐</b>\n"
+        f"👥 Рефералов: {referrals}\n"
+        f"📈 Всего заработано: {total_earned:.2f} ⭐\n"
+        f"⚡ Персональный буст: x{ref_boost:.1f}"
     )
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
     try:
@@ -622,8 +639,9 @@ async def cb_referrals(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
     if not u:
         return
+    ref_code = u.get('ref_code', f"ref{call.from_user.id}")
     bot_username = (await bot.get_me()).username
-    ref_link = f"https://t.me/{bot_username}?start={u['ref_code']}"
+    ref_link = f"https://t.me/{bot_username}?start={ref_code}"
     ref_reward = float(db.get_config('ref_reward', 5.0))
     text = (
         f"👥 <b>Рефералы</b>\n\n"
@@ -671,11 +689,14 @@ async def cb_luck(call: CallbackQuery):
     await call.answer()
     uid = call.from_user.id
     user = db.get_user(uid)
+    if not user:
+        return await call.message.answer("❌ Ошибка: вас нет в базе. Напишите /start")
     now = datetime.now()
     cooldown = int(db.get_config('luck_cooldown', 21600))
-    if user['last_luck']:
+    last_luck = user.get('last_luck')
+    if last_luck:
         try:
-            last = datetime.fromisoformat(user['last_luck'])
+            last = datetime.fromisoformat(last_luck)
             if (now - last).total_seconds() < cooldown:
                 remaining = int(cooldown - (now - last).total_seconds())
                 minutes = remaining // 60
@@ -694,7 +715,7 @@ async def cb_luck(call: CallbackQuery):
         await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
     except Exception as e:
         logging.error(f"Error editing message in luck: {e}")
-
+        await call.message.answer("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
 
 # ========== КВЕСТЫ ==========
 @dp.callback_query(F.data == "tasks")
@@ -853,8 +874,8 @@ async def cb_top(call: CallbackQuery):
     rows = db.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10", fetch=True)
     text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
     for i, row in enumerate(rows, 1):
-        name = row['first_name'][:3] + "***" if row['first_name'] else "***"
-        stars = float(row['stars'])
+        name = row.get('first_name', '***')[:3] + "***"
+        stars = float(row.get('stars', 0))
         text += f"{i}. {name} — <b>{stars:.1f} ⭐</b>\n"
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
     try:
