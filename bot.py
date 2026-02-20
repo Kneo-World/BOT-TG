@@ -1,9 +1,10 @@
 """
-StarsForQuestion - ULTIMATE MONOLITH v9.0 (ПОВНА ВЕРСІЯ)
-Абсолютно всі функції: економіка, реферали (з бонусом після активації), 
-пости в канал, реалістичні фейки, P2P маркет, лотерея, дуелі, квести,
-магазин з ексклюзивами, інвентар, глобальні бусти (адмін-абʼюзи),
-повне налаштування через БД, логування адмінів, PostgreSQL для Render тун тун.
+StarsForQuestion - ULTIMATE MONOLITH v10.0 (ПОЛНАЯ ВЕРСИЯ, РУССКИЙ)
+Абсолютно все функции: экономика, рефералы (с бонусом после активации), 
+посты в канал, реалистичные фейки, P2P маркет, лотерея, дуэли, квесты,
+магазин с эксклюзивами, инвентарь, глобальные бусты (админ-абьюзы),
+полная настройка через БД, логирование админов, PostgreSQL для Render.
+Все тексты на русском языке, все кнопки работают.
 """
 
 import asyncio
@@ -14,7 +15,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional, Any, Dict, List, Tuple
 
-# База даних: підтримка SQLite та PostgreSQL
+# База данных: поддержка SQLite и PostgreSQL
 import sqlite3
 try:
     import psycopg2
@@ -38,10 +39,10 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 
-# ========== КОНФІГУРАЦІЯ З ОТОЧЕННЯ ==========
+# ========== КОНФИГУРАЦИЯ ИЗ ОКРУЖЕНИЯ ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не задано!")
+    raise ValueError("BOT_TOKEN не задан!")
 
 CHANNEL_ID = os.getenv("CHANNEL_ID", "-1003326584722")
 raw_admins = os.getenv("ADMIN_IDS", "8364667153")
@@ -50,11 +51,11 @@ WITHDRAWAL_CHANNEL_ID = os.getenv("WITHDRAWAL_CHANNEL", "-1003891414947")
 SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@Nft_top3")
 PORT = int(os.environ.get("PORT", 10000))
 
-# Вибір бази даних: PostgreSQL якщо задано DATABASE_URL, інакше SQLite
+# Выбор базы данных: PostgreSQL если задан DATABASE_URL, иначе SQLite
 DATABASE_URL = os.getenv("DATABASE_URL")  # для Render PostgreSQL
 
 
-# ========== БАЗА ДАНИХ (УНІВЕРСАЛЬНИЙ КЛАС) ==========
+# ========== БАЗА ДАННЫХ (УНИВЕРСАЛЬНЫЙ КЛАСС) ==========
 class Database:
     def __init__(self):
         self.use_postgres = DATABASE_URL is not None and PSYCOPG2_AVAILABLE
@@ -74,7 +75,7 @@ class Database:
     def _init_postgres(self):
         with self.conn:
             with self.conn.cursor() as cur:
-                # Таблиця користувачів
+                # Таблица пользователей
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -91,7 +92,7 @@ class Database:
                         referred_by BIGINT
                     )
                 """)
-                # Інвентар
+                # Инвентарь
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS inventory (
                         user_id BIGINT,
@@ -124,7 +125,7 @@ class Database:
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                # Квести
+                # Квесты
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS task_claims (
                         user_id BIGINT,
@@ -132,7 +133,7 @@ class Database:
                         PRIMARY KEY (user_id, task_id)
                     )
                 """)
-                # Промокоди
+                # Промокоды
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS promo (
                         code TEXT PRIMARY KEY,
@@ -148,7 +149,7 @@ class Database:
                         PRIMARY KEY (user_id, code)
                     )
                 """)
-                # Стріки
+                # Стрики
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS daily_bonus (
                         user_id BIGINT PRIMARY KEY,
@@ -156,14 +157,14 @@ class Database:
                         streak INTEGER DEFAULT 0
                     )
                 """)
-                # Дуелі
+                # Дуэли
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS active_duels (
                         creator_id BIGINT PRIMARY KEY,
                         amount REAL
                     )
                 """)
-                # Таблиця для збереження налаштувань (config)
+                # Таблица настроек config
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS config (
                         key TEXT PRIMARY KEY,
@@ -171,7 +172,7 @@ class Database:
                         description TEXT
                     )
                 """)
-                # Таблиця логів адмінів
+                # Таблица логов админов
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS admin_logs (
                         id SERIAL PRIMARY KEY,
@@ -181,30 +182,30 @@ class Database:
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                # Заповнюємо config значеннями за замовчуванням, якщо порожньо
+                # Заполняем config значениями по умолчанию
                 default_config = {
-                    'ref_reward': ('5.0', 'Нагорода за активного реферала (зірок)'),
-                    'view_reward': ('0.3', 'Нагорода за перегляд посту'),
-                    'daily_min': ('1', 'Мінімум щоденного бонусу'),
-                    'daily_max': ('3', 'Максимум щоденного бонусу'),
-                    'luck_min': ('0', 'Мінімум удачі'),
-                    'luck_max': ('5', 'Максимум удачі'),
-                    'luck_cooldown': ('21600', 'Кулдаун удачі (секунд)'),
-                    'withdrawal_options': ('15,25,50,100', 'Доступні суми виведення через кому'),
-                    'gifts_prices': ('{"🧸 Мишка":45,"❤️ Сердце":45,"🎁 Подарок":75,"🌹 Роза":75,"🍰 Тортик":150,"💐 Букет":150,"🚀 Ракета":150,"🍾 Шампанское":150,"🏆 Кубок":300,"💍 Колечко":300,"💎 Алмаз":300}', 'Ціни на подарунки (JSON)'),
-                    'special_items': ('{"Ramen":{"price":250,"limit":25,"full_name":"🍜 Ramen"},"Candle":{"price":199,"limit":30,"full_name":"🕯 B-Day Candle"},"Calendar":{"price":320,"limit":18,"full_name":"🗓 Desk Calendar"}}', 'Ексклюзивні товари (JSON)'),
+                    'ref_reward': ('5.0', 'Награда за активного реферала (звезд)'),
+                    'view_reward': ('0.3', 'Награда за просмотр поста'),
+                    'daily_min': ('1', 'Минимум ежедневного бонуса'),
+                    'daily_max': ('3', 'Максимум ежедневного бонуса'),
+                    'luck_min': ('0', 'Минимум удачи'),
+                    'luck_max': ('5', 'Максимум удачи'),
+                    'luck_cooldown': ('21600', 'Кулдаун удачи (секунд)'),
+                    'withdrawal_options': ('15,25,50,100', 'Доступные суммы вывода через запятую'),
+                    'gifts_prices': ('{"🧸 Мишка":45,"❤️ Сердце":45,"🎁 Подарок":75,"🌹 Роза":75,"🍰 Тортик":150,"💐 Букет":150,"🚀 Ракета":150,"🍾 Шампанское":150,"🏆 Кубок":300,"💍 Колечко":300,"💎 Алмаз":300}', 'Цены на подарки (JSON)'),
+                    'special_items': ('{"Ramen":{"price":250,"limit":25,"full_name":"🍜 Ramen"},"Candle":{"price":199,"limit":30,"full_name":"🕯 B-Day Candle"},"Calendar":{"price":320,"limit":18,"full_name":"🗓 Desk Calendar"}}', 'Эксклюзивные товары (JSON)'),
                 }
                 for key, (value, desc) in default_config.items():
                     cur.execute("INSERT INTO config (key, value, description) VALUES (%s, %s, %s) ON CONFLICT (key) DO NOTHING", (key, value, desc))
-                # Глобальні бусти (зберігаються в config)
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальний множник рефералів') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Час закінчення глобального бусту рефералів (ISO)') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальний множник виграшів в іграх') ON CONFLICT DO NOTHING")
-                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Час закінчення глобального бусту ігор') ON CONFLICT DO NOTHING")
+                # Глобальные бусты
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальный множитель рефералов') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
+                cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
 
     def _init_sqlite(self):
         cursor = self.conn.cursor()
-        # Таблиця користувачів
+        # Таблица пользователей
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -221,7 +222,7 @@ class Database:
                 referred_by INTEGER
             )
         """)
-        # Інвентар
+        # Инвентарь
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
                 user_id INTEGER,
@@ -254,7 +255,7 @@ class Database:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Квести
+        # Квесты
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS task_claims (
                 user_id INTEGER,
@@ -262,7 +263,7 @@ class Database:
                 PRIMARY KEY (user_id, task_id)
             )
         """)
-        # Промокоди
+        # Промокоды
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS promo (
                 code TEXT PRIMARY KEY,
@@ -278,7 +279,7 @@ class Database:
                 PRIMARY KEY (user_id, code)
             )
         """)
-        # Стріки
+        # Стрики
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS daily_bonus (
                 user_id INTEGER PRIMARY KEY,
@@ -286,14 +287,14 @@ class Database:
                 streak INTEGER DEFAULT 0
             )
         """)
-        # Дуелі
+        # Дуэли
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS active_duels (
                 creator_id INTEGER PRIMARY KEY,
                 amount REAL
             )
         """)
-        # Таблиця налаштувань config
+        # Таблица настроек config
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS config (
                 key TEXT PRIMARY KEY,
@@ -301,7 +302,7 @@ class Database:
                 description TEXT
             )
         """)
-        # Таблиця логів адмінів
+        # Таблица логов админов
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS admin_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -311,32 +312,32 @@ class Database:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        # Заповнюємо config значеннями за замовчуванням
+        # Заполняем config значениями по умолчанию
         default_config = {
-            'ref_reward': ('5.0', 'Нагорода за активного реферала (зірок)'),
-            'view_reward': ('0.3', 'Нагорода за перегляд посту'),
-            'daily_min': ('1', 'Мінімум щоденного бонусу'),
-            'daily_max': ('3', 'Максимум щоденного бонусу'),
-            'luck_min': ('0', 'Мінімум удачі'),
-            'luck_max': ('5', 'Максимум удачі'),
-            'luck_cooldown': ('21600', 'Кулдаун удачі (секунд)'),
-            'withdrawal_options': ('15,25,50,100', 'Доступні суми виведення через кому'),
-            'gifts_prices': ('{"🧸 Мишка":45,"❤️ Сердце":45,"🎁 Подарок":75,"🌹 Роза":75,"🍰 Тортик":150,"💐 Букет":150,"🚀 Ракета":150,"🍾 Шампанское":150,"🏆 Кубок":300,"💍 Колечко":300,"💎 Алмаз":300}', 'Ціни на подарунки (JSON)'),
-            'special_items': ('{"Ramen":{"price":250,"limit":25,"full_name":"🍜 Ramen"},"Candle":{"price":199,"limit":30,"full_name":"🕯 B-Day Candle"},"Calendar":{"price":320,"limit":18,"full_name":"🗓 Desk Calendar"}}', 'Ексклюзивні товари (JSON)'),
+            'ref_reward': ('5.0', 'Награда за активного реферала (звезд)'),
+            'view_reward': ('0.3', 'Награда за просмотр поста'),
+            'daily_min': ('1', 'Минимум ежедневного бонуса'),
+            'daily_max': ('3', 'Максимум ежедневного бонуса'),
+            'luck_min': ('0', 'Минимум удачи'),
+            'luck_max': ('5', 'Максимум удачи'),
+            'luck_cooldown': ('21600', 'Кулдаун удачи (секунд)'),
+            'withdrawal_options': ('15,25,50,100', 'Доступные суммы вывода через запятую'),
+            'gifts_prices': ('{"🧸 Мишка":45,"❤️ Сердце":45,"🎁 Подарок":75,"🌹 Роза":75,"🍰 Тортик":150,"💐 Букет":150,"🚀 Ракета":150,"🍾 Шампанское":150,"🏆 Кубок":300,"💍 Колечко":300,"💎 Алмаз":300}', 'Цены на подарки (JSON)'),
+            'special_items': ('{"Ramen":{"price":250,"limit":25,"full_name":"🍜 Ramen"},"Candle":{"price":199,"limit":30,"full_name":"🕯 B-Day Candle"},"Calendar":{"price":320,"limit":18,"full_name":"🗓 Desk Calendar"}}', 'Эксклюзивные товары (JSON)'),
         }
         for key, (value, desc) in default_config.items():
             cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES (?, ?, ?)", (key, value, desc))
-        # Глобальні бусти
-        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальний множник рефералів')")
-        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_ref_until', '', 'Час закінчення глобального бусту рефералів (ISO)')")
-        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальний множник виграшів в іграх')")
-        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_until', '', 'Час закінчення глобального бусту ігор')")
+        # Глобальные бусты
+        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_ref_mult', '1.0', 'Глобальный множитель рефералов')")
+        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)')")
+        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх')")
+        cursor.execute("INSERT OR IGNORE INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр')")
         self.conn.commit()
 
     def execute(self, query: str, params: tuple = (), fetch: bool = False, fetchone: bool = False):
-        """Універсальний метод виконання запитів (працює і з PostgreSQL, і з SQLite)"""
+        """Универсальный метод выполнения запросов (работает и с PostgreSQL, и с SQLite)"""
         if self.use_postgres:
-            # Замінюємо ? на %s для сумісності
+            # Заменяем ? на %s для совместимости
             query = query.replace('?', '%s')
             with self.conn:
                 with self.conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
@@ -357,7 +358,7 @@ class Database:
             self.conn.commit()
             return None
 
-    # ========== МЕТОДИ ДЛЯ РОБОТИ З КОРИСТУВАЧАМИ ==========
+    # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ ==========
     def get_user(self, user_id: int) -> Optional[Dict]:
         row = self.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
         return dict(row) if row else None
@@ -370,36 +371,36 @@ class Database:
         )
 
     def add_stars(self, user_id: int, amount: float):
-        """Додає зірки, оновлює total_earned та активує реферала при досягненні 1.0"""
+        """Добавляет звезды, обновляет total_earned и активирует реферала при достижении 1.0"""
         if amount == 0:
             return
-        # Якщо додаємо позитивну суму, враховуємо персональний буст
+        # Если добавляем положительную сумму, учитываем персональный буст
         if amount > 0:
             user = self.get_user(user_id)
             if user:
                 boost = user.get('ref_boost', 1.0)
                 amount = amount * boost
-            # Оновлюємо зірки
+            # Обновляем звезды
             self.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
-            # Оновлюємо total_earned та перевіряємо активацію
+            # Обновляем total_earned и проверяем активацию
             self.update_user_activity(user_id, amount)
         else:
-            # Витрата – просто знімаємо зірки
+            # Трата – просто снимаем звезды (буст не применяется)
             self.execute("UPDATE users SET stars = stars + ? WHERE user_id = ?", (amount, user_id))
 
     def update_user_activity(self, user_id: int, earned: float):
-        """Оновлює total_earned та перевіряє активацію реферала"""
+        """Обновляет total_earned и проверяет активацию реферала"""
         self.execute("UPDATE users SET total_earned = total_earned + ? WHERE user_id = ?", (earned, user_id))
         user = self.get_user(user_id)
         if user and user['total_earned'] >= 1.0 and not user['is_active']:
             self.execute("UPDATE users SET is_active = 1 WHERE user_id = ?", (user_id,))
-            # Нарахувати бонус рефереру, якщо є
+            # Начислить бонус рефереру, если есть
             if user['referred_by']:
                 ref_reward = float(self.get_config('ref_reward', 5.0))
                 global_mult = self.get_global_boost('ref')
                 self.add_stars(user['referred_by'], ref_reward * global_mult)
 
-    # ========== РОБОТА З КОНФІГОМ ==========
+    # ========== РАБОТА С КОНФИГОМ ==========
     def get_config(self, key: str, default: Any = None) -> Any:
         row = self.execute("SELECT value FROM config WHERE key = ?", (key,), fetchone=True)
         if row:
@@ -425,9 +426,9 @@ class Database:
         opt = self.get_config('withdrawal_options', '15,25,50,100')
         return [int(x.strip()) for x in opt.split(',') if x.strip()]
 
-    # ========== ГЛОБАЛЬНІ БУСТИ ==========
+    # ========== ГЛОБАЛЬНЫЕ БУСТЫ ==========
     def get_global_boost(self, boost_type: str) -> float:
-        """Повертає множник глобального бусту (якщо активний)"""
+        """Возвращает множитель глобального буста (если активен)"""
         mult_key = f'global_{boost_type}_mult'
         until_key = f'global_{boost_type}_until'
         mult = float(self.get_config(mult_key, 1.0))
@@ -436,7 +437,7 @@ class Database:
             try:
                 until = datetime.fromisoformat(until_str)
                 if datetime.utcnow() > until:
-                    # Буст прострочений – скидаємо
+                    # Буст просрочен – сбрасываем
                     self.set_config(mult_key, '1.0')
                     self.set_config(until_key, '')
                     return 1.0
@@ -445,7 +446,7 @@ class Database:
         return mult
 
     def set_global_boost(self, boost_type: str, multiplier: float, duration_seconds: int = None):
-        """Активувати глобальний буст на певний час (якщо duration задано) або назавжди"""
+        """Активировать глобальный буст на определённое время (если duration задан) или навсегда"""
         self.set_config(f'global_{boost_type}_mult', str(multiplier))
         if duration_seconds:
             until = (datetime.utcnow() + timedelta(seconds=duration_seconds)).isoformat()
@@ -457,16 +458,16 @@ class Database:
         self.set_config(f'global_{boost_type}_mult', '1.0')
         self.set_config(f'global_{boost_type}_until', '')
 
-    # ========== ЛОГИ АДМІНІВ ==========
+    # ========== ЛОГИ АДМИНОВ ==========
     def log_admin(self, admin_id: int, action: str, details: str = ''):
         self.execute("INSERT INTO admin_logs (admin_id, action, details) VALUES (?, ?, ?)", (admin_id, action, details))
 
 
-# ========== ІНІЦІАЛІЗАЦІЯ БД ==========
+# ========== ИНИЦИАЛИЗАЦИЯ БД ==========
 db = Database()
 
 
-# ========== СОСТОЯННЯ FSM ==========
+# ========== СОСТОЯНИЯ FSM ==========
 class AdminStates(StatesGroup):
     waiting_fake_name = State()
     waiting_give_data = State()
@@ -490,12 +491,12 @@ class P2PSaleStates(StatesGroup):
     waiting_for_price = State()
 
 
-# ========== ІНІЦІАЛІЗАЦІЯ БОТА ==========
+# ========== ИНИЦИАЛИЗАЦИЯ БОТА ==========
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 
 
-# ========== ДОПОМІЖНІ ФУНКЦІЇ ==========
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
 def mask_name(name: str) -> str:
     if not name:
         return "User****"
@@ -508,50 +509,50 @@ def generate_fake_id() -> str:
 def get_main_kb(uid: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="🎯 Квести", callback_data="tasks"),
-        InlineKeyboardButton(text="⚔️ Дуель", callback_data="duel_menu"),
-        InlineKeyboardButton(text="👥 Друзі", callback_data="referrals")
+        InlineKeyboardButton(text="🎯 Квесты", callback_data="tasks"),
+        InlineKeyboardButton(text="⚔️ Дуэль", callback_data="duel_menu"),
+        InlineKeyboardButton(text="👥 Друзья", callback_data="referrals")
     )
     builder.row(
         InlineKeyboardButton(text="🎰 Удача", callback_data="luck"),
-        InlineKeyboardButton(text="📆 Щоденно", callback_data="daily"),
+        InlineKeyboardButton(text="📆 Ежедневно", callback_data="daily"),
         InlineKeyboardButton(text="🎟 Лотерея", callback_data="lottery")
     )
     builder.row(
         InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"),
         InlineKeyboardButton(text="🏪 P2P Маркет", callback_data="p2p_market"),
-        InlineKeyboardButton(text="🎒 Інвентар", callback_data="inventory_0")
+        InlineKeyboardButton(text="🎒 Инвентарь", callback_data="inventory_0")
     )
     builder.row(
         InlineKeyboardButton(text="🏆 ТОП", callback_data="top"),
-        InlineKeyboardButton(text="👤 Профіль", callback_data="profile"),
+        InlineKeyboardButton(text="👤 Профиль", callback_data="profile"),
         InlineKeyboardButton(text="🎁 Промокод", callback_data="use_promo")
     )
     builder.row(
-        InlineKeyboardButton(text="💸 Вивести", callback_data="withdraw")
+        InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw")
     )
     if uid in ADMIN_IDS:
-        builder.row(InlineKeyboardButton(text="👑 Адмін Панель", callback_data="admin_panel"))
+        builder.row(InlineKeyboardButton(text="👑 Админ Панель", callback_data="admin_panel"))
     return builder.as_markup()
 
 def get_admin_decision_kb(uid: int, amount: Any) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Прийняти", callback_data=f"adm_app_{uid}_{amount}"),
-        InlineKeyboardButton(text="❌ Відхилити", callback_data=f"adm_rej_{uid}_{amount}")
+        InlineKeyboardButton(text="✅ Принять", callback_data=f"adm_app_{uid}_{amount}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm_rej_{uid}_{amount}")
     )
-    builder.row(InlineKeyboardButton(text="✉️ Написати в ЛС", callback_data=f"adm_chat_{uid}"))
+    builder.row(InlineKeyboardButton(text="✉️ Написать в ЛС", callback_data=f"adm_chat_{uid}"))
     return builder.as_markup()
 
 
-# ========== ОБРОБНИКИ КОРИСТУВАЧІВ ==========
+# ========== ОБРАБОТЧИКИ ПОЛЬЗОВАТЕЛЕЙ ==========
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     args = message.text.split()
     uid = message.from_user.id
     referred_by = None
 
-    # Перевірка на реферальне посилання
+    # Проверка на реферальную ссылку
     if len(args) > 1:
         param = args[1]
         if param.startswith("ref"):
@@ -565,45 +566,45 @@ async def cmd_start(message: Message):
             creator_id = int(param.replace("duel", ""))
             if creator_id != uid:
                 kb = InlineKeyboardBuilder().row(
-                    InlineKeyboardButton(text="🤝 Прийняти виклик (5.0 ⭐)", callback_data=f"accept_duel_{creator_id}"),
-                    InlineKeyboardButton(text="❌ Відмова", callback_data="menu")
+                    InlineKeyboardButton(text="🤝 Принять вызов (5.0 ⭐)", callback_data=f"accept_duel_{creator_id}"),
+                    InlineKeyboardButton(text="❌ Отказ", callback_data="menu")
                 ).as_markup()
-                await message.answer(f"⚔️ Гравець ID:{creator_id} викликає тебе на дуель!", reply_markup=kb)
+                await message.answer(f"⚔️ Игрок ID:{creator_id} вызывает тебя на дуэль!", reply_markup=kb)
                 return
 
-    # Створення користувача, якщо новий
+    # Создание пользователя, если новый
     user = db.get_user(uid)
     if not user:
         db.create_user(uid, message.from_user.username or "", message.from_user.first_name or "", referred_by)
         if referred_by:
             try:
-                await bot.send_message(referred_by, "👥 У вас новий реферал! Він отримає бонус, коли заробить перші 1.0 ⭐.")
+                await bot.send_message(referred_by, "👥 У вас новый реферал! Он получит бонус, когда заработает первые 1.0 ⭐.")
             except:
                 pass
 
     await message.answer(
-        f"👋 Привіт, <b>{message.from_user.first_name}</b>!\n\n"
-        "💎 <b>StarsForQuestion</b> — місце, де твоя активність перетворюється на Зірки.\n\n"
-        "🎯 Виконуй завдання, крути удачу і забирай подарунки!",
+        f"👋 Привет, <b>{message.from_user.first_name}</b>!\n\n"
+        "💎 <b>StarsForQuestion</b> — место, где твоя активность превращается в Звёзды.\n\n"
+        "🎯 Выполняй задания, крути удачу и забирай подарки!",
         reply_markup=get_main_kb(uid)
     )
 
 @dp.callback_query(F.data == "menu")
 async def cb_menu(call: CallbackQuery):
-    await call.message.edit_text("⭐ <b>Головне меню</b>", reply_markup=get_main_kb(call.from_user.id))
+    await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(call.from_user.id))
 
 @dp.callback_query(F.data == "profile")
 async def cb_profile(call: CallbackQuery):
     u = db.get_user(call.from_user.id)
     if not u:
-        return await call.answer("❌ Помилка: вас немає в базі. Напишіть /start", show_alert=True)
+        return await call.answer("❌ Ошибка: вас нет в базе. Напишите /start", show_alert=True)
     text = (
-        f"👤 <b>Профіль</b>\n\n"
+        f"👤 <b>Профиль</b>\n\n"
         f"🆔 ID: <code>{u['user_id']}</code>\n"
         f"⭐ Баланс: <b>{u['stars']:.2f} ⭐</b>\n"
-        f"👥 Рефералів: {u['referrals']}\n"
-        f"📈 Всього зароблено: {u['total_earned']:.2f} ⭐\n"
-        f"⚡ Персональний буст: x{u['ref_boost']:.1f}"
+        f"👥 Рефералов: {u['referrals']}\n"
+        f"📈 Всего заработано: {u['total_earned']:.2f} ⭐\n"
+        f"⚡ Персональный буст: x{u['ref_boost']:.1f}"
     )
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
     await call.message.edit_text(text, reply_markup=kb)
@@ -617,9 +618,9 @@ async def cb_referrals(call: CallbackQuery):
     ref_link = f"https://t.me/{bot_username}?start={u['ref_code']}"
     ref_reward = float(db.get_config('ref_reward', 5.0))
     text = (
-        f"👥 <b>Реферали</b>\n\n"
-        f"За активного друга (заробив ≥1 ⭐): <b>{ref_reward} ⭐</b>\n\n"
-        f"🔗 Твоя реферальна посилання:\n<code>{ref_link}</code>"
+        f"👥 <b>Рефералы</b>\n\n"
+        f"За активного друга (заработал ≥1 ⭐): <b>{ref_reward} ⭐</b>\n\n"
+        f"🔗 Твоя реферальная ссылка:\n<code>{ref_link}</code>"
     )
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
     await call.message.edit_text(text, reply_markup=kb)
@@ -630,13 +631,13 @@ async def cb_daily(call: CallbackQuery):
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
 
-    # Отримуємо поточний стрік
+    # Получаем текущий стрик
     row = db.execute("SELECT last_date, streak FROM daily_bonus WHERE user_id = ?", (uid,), fetchone=True)
     if row:
         last_date = datetime.strptime(row['last_date'], "%Y-%m-%d")
         delta = (now.date() - last_date.date()).days
         if delta == 0:
-            return await call.answer("❌ Бонус вже отримано! Приходь завтра.", show_alert=True)
+            return await call.answer("❌ Бонус уже получен! Приходи завтра.", show_alert=True)
         elif delta == 1:
             new_streak = min(row['streak'] + 1, 7)
         else:
@@ -646,11 +647,11 @@ async def cb_daily(call: CallbackQuery):
         new_streak = 1
         db.execute("INSERT INTO daily_bonus (user_id, last_date, streak) VALUES (?, ?, ?)", (uid, today_str, new_streak))
 
-    # Розмір бонусу: 0.1 * стрік (наприклад)
+    # Размер бонуса: 0.1 * стрик
     reward = round(0.1 * new_streak, 2)
     db.add_stars(uid, reward)
-    await call.answer(f"✅ День {new_streak}! Отримано: {reward} ⭐", show_alert=True)
-    await call.message.edit_text("⭐ <b>Головне меню</b>", reply_markup=get_main_kb(uid))
+    await call.answer(f"✅ День {new_streak}! Получено: {reward} ⭐", show_alert=True)
+    await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
 
 @dp.callback_query(F.data == "luck")
 async def cb_luck(call: CallbackQuery):
@@ -664,31 +665,31 @@ async def cb_luck(call: CallbackQuery):
             if (now - last).total_seconds() < cooldown:
                 remaining = int(cooldown - (now - last).total_seconds())
                 minutes = remaining // 60
-                return await call.answer(f"⏳ Зачекайте {minutes} хв.", show_alert=True)
+                return await call.answer(f"⏳ Подожди {minutes} мин.", show_alert=True)
         except:
             pass
     luck_min = float(db.get_config('luck_min', 0))
     luck_max = float(db.get_config('luck_max', 5))
     win = round(random.uniform(luck_min, luck_max), 2)
-    # Враховуємо глобальний буст ігор
+    # Учитываем глобальный буст игр
     game_boost = db.get_global_boost('game')
     win *= game_boost
     db.add_stars(uid, win)
     db.execute("UPDATE users SET last_luck = ? WHERE user_id = ?", (now.isoformat(), uid))
     await call.answer(f"🎰 +{win:.2f} ⭐", show_alert=True)
-    await call.message.edit_text("⭐ <b>Головне меню</b>", reply_markup=get_main_kb(uid))
+    await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
 
-# ========== КВЕСТИ ==========
+# ========== КВЕСТЫ ==========
 @dp.callback_query(F.data == "tasks")
 async def cb_tasks(call: CallbackQuery):
     uid = call.from_user.id
-    # Активні реферали (ті, хто заробив ≥1)
+    # Активные рефералы (те, кто заработал ≥1)
     row = db.execute(
         "SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0",
         (uid,), fetchone=True
     )
     active_refs = row['cnt'] if row else 0
-    # Кількість куплених лотерейних білетів
+    # Количество купленных лотерейных билетов
     row = db.execute(
         "SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?",
         (uid,), fetchone=True
@@ -697,17 +698,17 @@ async def cb_tasks(call: CallbackQuery):
 
     kb = InlineKeyboardBuilder()
     status1 = "✅ Готово" if active_refs >= 3 else f"⏳ {active_refs}/3"
-    kb.row(InlineKeyboardButton(text=f"📈 Стахановець: {status1}", callback_data="claim_task_1"))
+    kb.row(InlineKeyboardButton(text=f"📈 Стахановец: {status1}", callback_data="claim_task_1"))
     status2 = "✅ Готово" if tickets_bought >= 5 else f"⏳ {tickets_bought}/5"
-    kb.row(InlineKeyboardButton(text=f"🎰 Ловець удачі: {status2}", callback_data="claim_task_2"))
-    kb.row(InlineKeyboardButton(text="📸 Надіслати відео-відгук (100 ⭐)", url=f"https://t.me/{SUPPORT_USERNAME.replace('@','')}"))
+    kb.row(InlineKeyboardButton(text=f"🎰 Ловец удачи: {status2}", callback_data="claim_task_2"))
+    kb.row(InlineKeyboardButton(text="📸 Отправить видео-отзыв (100 ⭐)", url=f"https://t.me/{SUPPORT_USERNAME.replace('@','')}"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
 
     await call.message.edit_text(
-        "🎯 <b>ЗАВДАННЯ ТА КВЕСТИ</b>\n"
+        "🎯 <b>ЗАДАНИЯ И КВЕСТЫ</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "💰 Забирай нагороди за активність!\n"
-        "Нагороди нараховуються миттєво.",
+        "💰 Забирай награды за активность!\n"
+        "Награды начисляются мгновенно.",
         reply_markup=kb.as_markup()
     )
 
@@ -716,13 +717,13 @@ async def claim_task(call: CallbackQuery):
     task_num = call.data.split("_")[2]
     uid = call.from_user.id
 
-    # Перевірка чи вже виконано
+    # Проверка, выполнено ли уже
     check = db.execute(
         "SELECT 1 FROM task_claims WHERE user_id = ? AND task_id = ?",
         (uid, task_num), fetchone=True
     )
     if check:
-        return await call.answer("❌ Ви вже отримали нагороду за цей квест!", show_alert=True)
+        return await call.answer("❌ Вы уже получили награду за этот квест!", show_alert=True)
 
     if task_num == "1":
         row = db.execute(
@@ -731,7 +732,7 @@ async def claim_task(call: CallbackQuery):
         )
         active_refs = row['cnt'] if row else 0
         if active_refs < 3:
-            return await call.answer("❌ Потрібно 3 активних реферала!", show_alert=True)
+            return await call.answer("❌ Нужно 3 активных реферала!", show_alert=True)
         reward = 15.0
     elif task_num == "2":
         row = db.execute(
@@ -740,30 +741,30 @@ async def claim_task(call: CallbackQuery):
         )
         tickets_bought = row['cnt'] if row else 0
         if tickets_bought < 5:
-            return await call.answer("❌ Потрібно купити 5 білетів!", show_alert=True)
+            return await call.answer("❌ Нужно купить 5 билетов!", show_alert=True)
         reward = 3.0
     else:
         return
 
     db.execute("INSERT INTO task_claims (user_id, task_id) VALUES (?, ?)", (uid, task_num))
     db.add_stars(uid, reward)
-    await call.answer(f"✅ Нараховано {reward} ⭐!", show_alert=True)
+    await call.answer(f"✅ Начислено {reward} ⭐!", show_alert=True)
     await cb_tasks(call)
 
-# ========== ДУЕЛІ ==========
+# ========== ДУЭЛИ ==========
 @dp.callback_query(F.data == "duel_menu")
 async def cb_duel_menu(call: CallbackQuery):
     uid = call.from_user.id
     bot_username = (await bot.get_me()).username
     link = f"https://t.me/{bot_username}?start=duel{uid}"
     text = (
-        "⚔️ <b>ДУЕЛЬНИЙ КЛУБ</b>\n━━━━━━━━━━━━━━\n"
+        "⚔️ <b>ДУЭЛЬНЫЙ КЛУБ</b>\n━━━━━━━━━━━━━━\n"
         "Ставка: <b>5.0 ⭐</b>\n"
-        "Переможець отримує: <b>9.0 ⭐</b>\n\n"
-        "Відправ посилання другу, щоб викликати його на бій:"
+        "Победитель получает: <b>9.0 ⭐</b>\n\n"
+        "Отправь ссылку другу, чтобы вызвать его на бой:"
     )
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="📨 Надіслати другу", switch_inline_query=link))
+    kb.row(InlineKeyboardButton(text="📨 Отправить другу", switch_inline_query=link))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text(f"{text}\n<code>{link}</code>", reply_markup=kb.as_markup())
 
@@ -772,20 +773,20 @@ async def cb_accept_duel(call: CallbackQuery):
     opponent_id = call.from_user.id
     creator_id = int(call.data.split("_")[2])
     if opponent_id == creator_id:
-        return await call.answer("❌ Не можна грати з самим собою!", show_alert=True)
+        return await call.answer("❌ Нельзя играть с самим собой!", show_alert=True)
     user = db.get_user(opponent_id)
     if not user or user['stars'] < 5.0:
-        return await call.answer("❌ Недостатньо ⭐ для ставки!", show_alert=True)
+        return await call.answer("❌ Недостаточно ⭐ для ставки!", show_alert=True)
     db.add_stars(opponent_id, -5.0)
-    msg = await call.message.answer("🎲 Кидаємо кості...")
+    msg = await call.message.answer("🎲 Бросаем кости...")
     dice = await msg.answer_dice("🎲")
     await asyncio.sleep(3.5)
     winner_id = creator_id if dice.dice.value <= 3 else opponent_id
     db.add_stars(winner_id, 9.0)
     await call.message.answer(
-        f"🎰 Випало <b>{dice.dice.value}</b>!\n"
-        f"👑 Переможець: <a href='tg://user?id={winner_id}'>Гравець</a>\n"
-        f"Зараховано: <b>9.0 ⭐</b>"
+        f"🎰 Выпало <b>{dice.dice.value}</b>!\n"
+        f"👑 Победитель: <a href='tg://user?id={winner_id}'>Игрок</a>\n"
+        f"Зачислено: <b>9.0 ⭐</b>"
     )
 
 # ========== ЛОТЕРЕЯ ==========
@@ -797,16 +798,16 @@ async def cb_lottery(call: CallbackQuery):
     participants = data['participants'].split(',') if data['participants'] else []
     count = len([p for p in participants if p])
     text = (
-        "🎟 <b>ЗІРКОВА ЛОТЕРЕЯ</b>\n"
+        "🎟 <b>ЗВЁЗДНАЯ ЛОТЕРЕЯ</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"💰 Поточний банк: <b>{data['pool']:.2f} ⭐</b>\n"
-        f"👥 Учасників: <b>{count}</b>\n"
-        f"🎫 Ціна квитка: <b>2.0 ⭐</b>\n"
+        f"💰 Текущий банк: <b>{data['pool']:.2f} ⭐</b>\n"
+        f"👥 Участников: <b>{count}</b>\n"
+        f"🎫 Цена билета: <b>2.0 ⭐</b>\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        "<i>Переможець забирає 80% банку. Розіграш відбувається автоматично при запуску адміном!</i>"
+        "<i>Победитель забирает 80% банка. Розыгрыш происходит автоматически при запуске админом!</i>"
     )
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💎 Купити квиток", callback_data="buy_ticket"))
+    kb.row(InlineKeyboardButton(text="💎 Купить билет", callback_data="buy_ticket"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text(text, reply_markup=kb.as_markup())
 
@@ -815,11 +816,11 @@ async def cb_buy_ticket(call: CallbackQuery):
     uid = call.from_user.id
     user = db.get_user(uid)
     if not user or user['stars'] < 2:
-        return await call.answer("❌ Недостатньо зірок (потрібно 2.0)", show_alert=True)
+        return await call.answer("❌ Недостаточно звёзд (нужно 2.0)", show_alert=True)
     db.add_stars(uid, -2)
     db.execute("UPDATE lottery SET pool = pool + 2, participants = participants || ? WHERE id = 1", (f"{uid},",))
     db.execute("INSERT INTO lottery_history (user_id) VALUES (?)", (uid,))
-    await call.answer("✅ Квиток куплено!", show_alert=True)
+    await call.answer("✅ Билет куплен!", show_alert=True)
     await cb_lottery(call)
 
 # ========== ТОП ==========
@@ -829,7 +830,7 @@ async def cb_top(call: CallbackQuery):
         "SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10",
         fetch=True
     )
-    text = "🏆 <b>ТОП-10 МАГНАТІВ</b>\n━━━━━━━━━━━━━━━━━━\n"
+    text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
     for i, row in enumerate(rows, 1):
         name = row['first_name'][:3] + "***" if row['first_name'] else "***"
         stars = float(row['stars'])
@@ -837,20 +838,20 @@ async def cb_top(call: CallbackQuery):
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
     await call.message.edit_text(text, reply_markup=kb)
 
-# ========== ВИВЕДЕННЯ ==========
+# ========== ВЫВОД СРЕДСТВ ==========
 @dp.callback_query(F.data == "withdraw")
 async def cb_withdraw_select(call: CallbackQuery):
     uid = call.from_user.id
     user = db.get_user(uid)
     if not user or user['stars'] < 15:
-        return await call.answer("❌ Мінімум 15 ⭐", show_alert=True)
+        return await call.answer("❌ Минимум 15 ⭐", show_alert=True)
     options = db.get_withdrawal_options()
     kb = InlineKeyboardBuilder()
     for opt in options:
         if user['stars'] >= opt:
             kb.row(InlineKeyboardButton(text=f"💎 {opt} ⭐", callback_data=f"wd_run_{opt}"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text("Оберіть суму:", reply_markup=kb.as_markup())
+    await call.message.edit_text("Выбери сумму:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("wd_run_"))
 async def cb_wd_execute(call: CallbackQuery):
@@ -858,30 +859,30 @@ async def cb_wd_execute(call: CallbackQuery):
     uid = call.from_user.id
     user = db.get_user(uid)
     if not user or user['stars'] < amt:
-        return await call.answer("❌ Недостатньо ⭐", show_alert=True)
+        return await call.answer("❌ Недостаточно ⭐", show_alert=True)
     db.add_stars(uid, -amt)
     name = mask_name(call.from_user.username or call.from_user.first_name)
     await bot.send_message(
         WITHDRAWAL_CHANNEL_ID,
-        f"📥 <b>НОВА ЗАЯВКА</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>{uid}</code>\n💎 Сума: <b>{amt} ⭐</b>",
+        f"📥 <b>НОВАЯ ЗАЯВКА</b>\n\n👤 Юзер: @{name}\n🆔 ID: <code>{uid}</code>\n💎 Сумма: <b>{amt} ⭐</b>",
         reply_markup=get_admin_decision_kb(uid, amt)
     )
-    await call.message.edit_text("✅ Заявку відправлено!", reply_markup=get_main_kb(uid))
+    await call.message.edit_text("✅ Заявка отправлена!", reply_markup=get_main_kb(uid))
 
-# ========== МАГАЗИН ТА ІНВЕНТАР ==========
+# ========== МАГАЗИН И ИНВЕНТАРЬ ==========
 @dp.callback_query(F.data == "shop")
 async def cb_shop_menu(call: CallbackQuery):
     gifts = db.get_gifts_prices()
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💎 ЕКСКЛЮЗИВНІ ТОВАРИ", callback_data="special_shop"))
-    kb.row(InlineKeyboardButton(text="⚡ Буст рефералів +0.1 (50 ⭐)", callback_data="buy_boost_01"))
+    kb.row(InlineKeyboardButton(text="💎 ЭКСКЛЮЗИВНЫЕ ТОВАРЫ", callback_data="special_shop"))
+    kb.row(InlineKeyboardButton(text="⚡ Буст рефералов +0.1 (50 ⭐)", callback_data="buy_boost_01"))
     for item, price in gifts.items():
         kb.add(InlineKeyboardButton(text=f"{item} {price}⭐", callback_data=f"buy_g_{item}"))
     kb.adjust(1, 1, 2)
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text(
         "✨ <b>МАГАЗИН</b>\n\n"
-        "Звичайні подарунки доступні завжди, а в <b>Ексклюзивному відділі</b> товари обмежені за кількістю!",
+        "Обычные подарки доступны всегда, а в <b>Эксклюзивном отделе</b> товары ограничены по количеству!",
         reply_markup=kb.as_markup()
     )
 
@@ -890,10 +891,10 @@ async def buy_boost(call: CallbackQuery):
     uid = call.from_user.id
     user = db.get_user(uid)
     if not user or user['stars'] < 50:
-        return await call.answer("❌ Потрібно 50 ⭐", show_alert=True)
+        return await call.answer("❌ Нужно 50 ⭐", show_alert=True)
     db.add_stars(uid, -50)
     db.execute("UPDATE users SET ref_boost = ref_boost + 0.1 WHERE user_id = ?", (uid,))
-    await call.answer("🚀 Буст куплено! Тепер ти отримуєш більше.", show_alert=True)
+    await call.answer("🚀 Буст куплен! Теперь ты получаешь больше.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("buy_g_"))
 async def process_gift_buy(call: CallbackQuery):
@@ -901,13 +902,13 @@ async def process_gift_buy(call: CallbackQuery):
     gifts = db.get_gifts_prices()
     price = gifts.get(item_name)
     if not price:
-        return await call.answer("❌ Товар не знайдено", show_alert=True)
+        return await call.answer("❌ Товар не найден", show_alert=True)
     uid = call.from_user.id
     user = db.get_user(uid)
     if not user or user['stars'] < price:
-        return await call.answer(f"❌ Недостатньо зірок! Потрібно {price} ⭐", show_alert=True)
+        return await call.answer(f"❌ Недостаточно звёзд! Нужно {price} ⭐", show_alert=True)
     db.add_stars(uid, -price)
-    # Додаємо в інвентар
+    # Добавляем в инвентарь
     existing = db.execute(
         "SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?",
         (uid, item_name), fetchone=True
@@ -916,12 +917,13 @@ async def process_gift_buy(call: CallbackQuery):
         db.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (uid, item_name))
     else:
         db.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (uid, item_name))
-    await call.answer(f"✅ Ви купили {item_name}!", show_alert=True)
+    await call.answer(f"✅ Ты купил {item_name}!", show_alert=True)
 
-@dp.callback_query(F.data.startswith("inventory_"))
+@dp.callback_query(F.data.startswith("inventory"))
 async def cb_inventory_logic(call: CallbackQuery):
+    # Обработчик для inventory_0, inventory_1 и т.д.
     parts = call.data.split("_")
-    page = int(parts[1]) if len(parts) > 1 else 0
+    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
     uid = call.from_user.id
     items = db.execute(
         "SELECT item_name, quantity FROM inventory WHERE user_id = ?",
@@ -929,7 +931,7 @@ async def cb_inventory_logic(call: CallbackQuery):
     )
     if not items:
         kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
-        return await call.message.edit_text("🎒 <b>Твій інвентар порожній.</b>\nКупи щось у магазині!", reply_markup=kb)
+        return await call.message.edit_text("🎒 <b>Твой инвентарь пуст.</b>\nКупи что-нибудь в магазине!", reply_markup=kb)
 
     ITEMS_PER_PAGE = 5
     total_pages = (len(items) + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE
@@ -937,7 +939,7 @@ async def cb_inventory_logic(call: CallbackQuery):
     end = start + ITEMS_PER_PAGE
     current = items[start:end]
 
-    text = f"🎒 <b>ТВІЙ ІНВЕНТАР</b> (Стор. {page+1}/{total_pages})\n\nНатисни на предмет, щоб вивести його:"
+    text = f"🎒 <b>ТВОЙ ИНВЕНТАРЬ</b> (Стр. {page+1}/{total_pages})\n\nНажми на предмет, чтобы вывести его:"
     kb = InlineKeyboardBuilder()
     for it in current:
         kb.row(InlineKeyboardButton(text=f"{it['item_name']} ({it['quantity']} шт.)", callback_data=f"pre_out_{it['item_name']}"))
@@ -956,12 +958,12 @@ async def cb_pre_out(call: CallbackQuery):
     item = call.data.replace("pre_out_", "")
     specials = db.get_special_items()
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="🎁 Отримати як подарунок", callback_data=f"confirm_out_{item}"))
-    # Якщо це ексклюзивний товар – дозволити продаж на P2P
+    kb.row(InlineKeyboardButton(text="🎁 Получить как подарок", callback_data=f"confirm_out_{item}"))
+    # Если это эксклюзивный товар – разрешить продажу на P2P
     if any(info['full_name'] == item for info in specials.values()):
-        kb.row(InlineKeyboardButton(text="💰 Виставити на P2P Маркет", callback_data=f"sell_p2p_{item}"))
-    kb.row(InlineKeyboardButton(text="❌ Скасувати", callback_data="inventory_0"))
-    await call.message.edit_text(f"Ви обрали: <b>{item}</b>\nЩо бажаєте зробити?", reply_markup=kb.as_markup())
+        kb.row(InlineKeyboardButton(text="💰 Выставить на P2P Маркет", callback_data=f"sell_p2p_{item}"))
+    kb.row(InlineKeyboardButton(text="❌ Отмена", callback_data="inventory_0"))
+    await call.message.edit_text(f"Ты выбрал: <b>{item}</b>\nЧто хочешь сделать?", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("confirm_out_"))
 async def cb_final_out(call: CallbackQuery):
@@ -970,15 +972,15 @@ async def cb_final_out(call: CallbackQuery):
     username = call.from_user.username or "User"
     name_masked = mask_name(call.from_user.first_name)
 
-    # Перевіряємо наявність
+    # Проверяем наличие
     res = db.execute(
         "SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?",
         (uid, item), fetchone=True
     )
     if not res or res['quantity'] <= 0:
-        return await call.answer("❌ Предмет не знайдено!", show_alert=True)
+        return await call.answer("❌ Предмет не найден!", show_alert=True)
 
-    # Видаляємо 1 шт
+    # Удаляем 1 шт
     if res['quantity'] > 1:
         db.execute("UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?", (uid, item))
     else:
@@ -986,18 +988,18 @@ async def cb_final_out(call: CallbackQuery):
 
     await bot.send_message(
         WITHDRAWAL_CHANNEL_ID,
-        f"🎁 <b>ЗАЯВКА НА ВИВЕДЕННЯ</b>\n\n"
+        f"🎁 <b>ЗАЯВКА НА ВЫВОД</b>\n\n"
         f"👤 Юзер: @{username}\n"
         f"🆔 ID: <code>{uid}</code>\n"
         f"📦 Предмет: <b>{item}</b>",
         reply_markup=get_admin_decision_kb(uid, "GIFT")
     )
     await call.message.edit_text(
-        f"✅ Заявку на виведення <b>{item}</b> надіслано!\nОчікуйте повідомлення від адміністратора.",
+        f"✅ Заявка на вывод <b>{item}</b> отправлена!\nОжидай сообщения от администратора.",
         reply_markup=get_main_kb(uid)
     )
 
-# ========== ЕКСКЛЮЗИВНИЙ МАГАЗИН ==========
+# ========== ЭКСКЛЮЗИВНЫЙ МАГАЗИН ==========
 @dp.callback_query(F.data == "special_shop")
 async def cb_special_shop(call: CallbackQuery):
     specials = db.get_special_items()
@@ -1010,22 +1012,22 @@ async def cb_special_shop(call: CallbackQuery):
         sold_cnt = sold['total'] if sold and sold['total'] else 0
         left = info['limit'] - sold_cnt
         if left > 0:
-            text = f"{info['full_name']} — {info['price']} ⭐ (Залишилось: {left})"
+            text = f"{info['full_name']} — {info['price']} ⭐ (Осталось: {left})"
             callback = f"buy_t_{key}"
         else:
-            text = f"{info['full_name']} — 🚫 РОЗПРОДАНО"
+            text = f"{info['full_name']} — 🚫 РАСПРОДАНО"
             callback = "sold_out"
         kb.row(InlineKeyboardButton(text=text, callback_data=callback))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="shop"))
     await call.message.edit_text(
-        "🛒 <b>ЕКСКЛЮЗИВНІ ТОВАРИ</b>\n\n"
-        "<i>Коли ліміт вичерпано, товар можна купити тільки у гравців на P2P Ринку!</i>",
+        "🛒 <b>ЭКСКЛЮЗИВНЫЕ ТОВАРЫ</b>\n\n"
+        "<i>Когда лимит исчерпан, товар можно купить только у игроков на P2P Рынке!</i>",
         reply_markup=kb.as_markup()
     )
 
 @dp.callback_query(F.data == "sold_out")
 async def cb_sold_out(call: CallbackQuery):
-    await call.answer("❌ Цей товар закінчився в магазині! Шукайте його на P2P.", show_alert=True)
+    await call.answer("❌ Этот товар закончился в магазине! Ищи его на P2P.", show_alert=True)
 
 @dp.callback_query(F.data.startswith("buy_t_"))
 async def buy_special_item(call: CallbackQuery):
@@ -1037,19 +1039,19 @@ async def buy_special_item(call: CallbackQuery):
     uid = call.from_user.id
     user = db.get_user(uid)
     if not user or user['stars'] < info['price']:
-        return await call.answer("❌ Недостатньо зірок!", show_alert=True)
+        return await call.answer("❌ Недостаточно звёзд!", show_alert=True)
 
-    # Перевірка ліміту
+    # Проверка лимита
     sold = db.execute(
         "SELECT SUM(quantity) as total FROM inventory WHERE item_name = ?",
         (info['full_name'],), fetchone=True
     )
     sold_cnt = sold['total'] if sold and sold['total'] else 0
     if sold_cnt >= info['limit']:
-        return await call.answer("❌ Ліміт вичерпано!", show_alert=True)
+        return await call.answer("❌ Лимит исчерпан!", show_alert=True)
 
     db.add_stars(uid, -info['price'])
-    # Додаємо в інвентар
+    # Добавляем в инвентарь
     existing = db.execute(
         "SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?",
         (uid, info['full_name']), fetchone=True
@@ -1058,16 +1060,16 @@ async def buy_special_item(call: CallbackQuery):
         db.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (uid, info['full_name']))
     else:
         db.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (uid, info['full_name']))
-    await call.answer(f"✅ {info['full_name']} куплено!", show_alert=True)
+    await call.answer(f"✅ {info['full_name']} куплен!", show_alert=True)
     await cb_special_shop(call)
 
 # ========== P2P МАРКЕТ ==========
 @dp.callback_query(F.data == "p2p_market")
 async def cb_p2p_market(call: CallbackQuery):
     items = db.execute("SELECT id, seller_id, item_name, price FROM marketplace", fetch=True)
-    text = "🏪 <b>P2P МАРКЕТ</b>\n\nТут можна перекупити ексклюзиви у гравців.\n"
+    text = "🏪 <b>P2P МАРКЕТ</b>\n\nЗдесь можно перекупить эксклюзивы у игроков.\n"
     if not items:
-        text += "\n<i>Лотів поки немає.</i>"
+        text += "\n<i>Лотов пока нет.</i>"
     kb = InlineKeyboardBuilder()
     for it in items:
         kb.row(InlineKeyboardButton(text=f"🛒 {it['item_name']} | {it['price']} ⭐", callback_data=f"buy_p2p_{it['id']}"))
@@ -1079,7 +1081,7 @@ async def cb_sell_item_start(call: CallbackQuery, state: FSMContext):
     item_name = call.data.replace("sell_p2p_", "")
     await state.update_data(sell_item=item_name)
     await state.set_state(P2PSaleStates.waiting_for_price)
-    await call.message.answer(f"💰 Введіть ціну в ⭐, за яку хочете продати <b>{item_name}</b>:")
+    await call.message.answer(f"💰 Введи цену в ⭐, за которую хочешь продать <b>{item_name}</b>:")
 
 @dp.message(P2PSaleStates.waiting_for_price)
 async def process_p2p_sale_price(message: Message, state: FSMContext):
@@ -1087,29 +1089,29 @@ async def process_p2p_sale_price(message: Message, state: FSMContext):
     item_name = data.get("sell_item")
     uid = message.from_user.id
     if not message.text.isdigit():
-        return await message.answer("❌ Введіть ціну числом!")
+        return await message.answer("❌ Введи цену числом!")
     price = int(message.text)
     if price <= 0:
-        return await message.answer("❌ Ціна повинна бути більше 0!")
+        return await message.answer("❌ Цена должна быть больше 0!")
 
-    # Перевіряємо наявність предмета
+    # Проверяем наличие предмета
     res = db.execute(
         "SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?",
         (uid, item_name), fetchone=True
     )
     if not res or res['quantity'] <= 0:
         await state.clear()
-        return await message.answer("❌ У вас немає цього предмета!")
+        return await message.answer("❌ У тебя нет этого предмета!")
 
-    # Забираємо предмет
+    # Забираем предмет
     if res['quantity'] > 1:
         db.execute("UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?", (uid, item_name))
     else:
         db.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item_name))
 
-    # Виставляємо на маркет
+    # Выставляем на маркет
     db.execute("INSERT INTO marketplace (seller_id, item_name, price) VALUES (?, ?, ?)", (uid, item_name, price))
-    await message.answer(f"✅ Предмет <b>{item_name}</b> виставлено на P2P Маркет за {price} ⭐")
+    await message.answer(f"✅ Предмет <b>{item_name}</b> выставлен на P2P Маркет за {price} ⭐")
     await state.clear()
 
 @dp.callback_query(F.data.startswith("buy_p2p_"))
@@ -1118,19 +1120,19 @@ async def cb_buy_p2p(call: CallbackQuery):
     buyer_id = call.from_user.id
     order = db.execute("SELECT * FROM marketplace WHERE id = ?", (order_id,), fetchone=True)
     if not order:
-        return await call.answer("❌ Товар вже продано!", show_alert=True)
+        return await call.answer("❌ Товар уже продан!", show_alert=True)
     if order['seller_id'] == buyer_id:
-        return await call.answer("❌ Свій товар купити не можна!", show_alert=True)
+        return await call.answer("❌ Свой товар купить нельзя!", show_alert=True)
     buyer = db.get_user(buyer_id)
     if not buyer or buyer['stars'] < order['price']:
-        return await call.answer("❌ Недостатньо ⭐", show_alert=True)
+        return await call.answer("❌ Недостаточно ⭐", show_alert=True)
 
-    # Списати з покупця, нарахувати продавцю (комісія 10%)
+    # Списать с покупателя, начислить продавцу (комиссия 10%)
     db.add_stars(buyer_id, -order['price'])
     seller_income = order['price'] * 0.9
     db.add_stars(order['seller_id'], seller_income)
 
-    # Додати предмет покупцю
+    # Добавить предмет покупателю
     existing = db.execute(
         "SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?",
         (buyer_id, order['item_name']), fetchone=True
@@ -1140,17 +1142,17 @@ async def cb_buy_p2p(call: CallbackQuery):
     else:
         db.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (buyer_id, order['item_name']))
 
-    # Видалити лот
+    # Удалить лот
     db.execute("DELETE FROM marketplace WHERE id = ?", (order_id,))
 
-    await call.answer(f"✅ Успішно куплено {order['item_name']}!", show_alert=True)
+    await call.answer(f"✅ Успешно куплен {order['item_name']}!", show_alert=True)
     await cb_p2p_market(call)
 
-# ========== ПРОМОКОДИ ==========
+# ========== ПРОМОКОДЫ ==========
 @dp.callback_query(F.data == "use_promo")
 async def promo_start(call: CallbackQuery, state: FSMContext):
     await state.set_state(PromoStates.waiting_for_code)
-    await call.message.answer("⌨️ Введіть промокод:")
+    await call.message.answer("⌨️ Введи промокод:")
 
 @dp.message(PromoStates.waiting_for_code)
 async def promo_process(message: Message, state: FSMContext):
@@ -1163,7 +1165,7 @@ async def promo_process(message: Message, state: FSMContext):
     )
     if already:
         await state.clear()
-        return await message.answer("❌ Ви вже активували цей промокод!")
+        return await message.answer("❌ Ты уже активировал этот промокод!")
 
     promo = db.execute(
         "SELECT * FROM promo WHERE code = ? AND uses > 0",
@@ -1171,15 +1173,15 @@ async def promo_process(message: Message, state: FSMContext):
     )
     if not promo:
         await state.clear()
-        return await message.answer("❌ Код невірний або закінчилися активації.")
+        return await message.answer("❌ Код неверный или закончились активации.")
 
-    # Зменшуємо ліміт використань
+    # Уменьшаем лимит использований
     db.execute("UPDATE promo SET uses = uses - 1 WHERE code = ?", (code,))
     db.execute("INSERT INTO promo_history (user_id, code) VALUES (?, ?)", (uid, code))
 
     if promo['reward_type'] == 'stars':
         db.add_stars(uid, float(promo['reward_value']))
-        await message.answer(f"✅ Активовано! +{promo['reward_value']} ⭐")
+        await message.answer(f"✅ Активировано! +{promo['reward_value']} ⭐")
     else:
         item = promo['reward_value']
         existing = db.execute(
@@ -1190,57 +1192,57 @@ async def promo_process(message: Message, state: FSMContext):
             db.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (uid, item))
         else:
             db.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (uid, item))
-        await message.answer(f"✅ Активовано! Отримано предмет: {item}")
+        await message.answer(f"✅ Активировано! Получен предмет: {item}")
     await state.clear()
 
-# ========== АДМІН ПАНЕЛЬ ==========
+# ========== АДМИН ПАНЕЛЬ ==========
 @dp.callback_query(F.data == "admin_panel")
 async def cb_admin_panel(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
-        return await call.answer("❌ Немає доступу!", show_alert=True)
+        return await call.answer("❌ Нет доступа!", show_alert=True)
     kb = InlineKeyboardBuilder()
     kb.row(
-        InlineKeyboardButton(text="📢 Розсилка", callback_data="a_broadcast"),
-        InlineKeyboardButton(text="🎁 Створити Промо", callback_data="a_create_promo")
+        InlineKeyboardButton(text="📢 Рассылка", callback_data="a_broadcast"),
+        InlineKeyboardButton(text="🎁 Создать Промо", callback_data="a_create_promo")
     )
     kb.row(
         InlineKeyboardButton(text="📢 Пост в КАНАЛ", callback_data="a_post_chan"),
         InlineKeyboardButton(text="🎭 Фейк Заявка", callback_data="a_fake_gen")
     )
     kb.row(
-        InlineKeyboardButton(text="💎 Видати ⭐", callback_data="a_give_stars"),
+        InlineKeyboardButton(text="💎 Выдать ⭐", callback_data="a_give_stars"),
         InlineKeyboardButton(text="⛔ Стоп Лотерея 🎰", callback_data="a_run_lottery")
     )
     kb.row(
-        InlineKeyboardButton(text="⚙️ Налаштування бота", callback_data="a_config_menu"),
-        InlineKeyboardButton(text="📈 Глобальні бусти", callback_data="a_global_boost_menu")
+        InlineKeyboardButton(text="⚙️ Настройки бота", callback_data="a_config_menu"),
+        InlineKeyboardButton(text="📈 Глобальные бусты", callback_data="a_global_boost_menu")
     )
     kb.row(
-        InlineKeyboardButton(text="🛍 Ціни магазину", callback_data="a_edit_gifts"),
-        InlineKeyboardButton(text="📦 Ліміти ексклюзивів", callback_data="a_edit_specials")
+        InlineKeyboardButton(text="🛍 Цены магазина", callback_data="a_edit_gifts"),
+        InlineKeyboardButton(text="📦 Лимиты эксклюзивов", callback_data="a_edit_specials")
     )
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    await call.message.edit_text("👑 <b>АДМІН-МЕНЮ</b>", reply_markup=kb.as_markup())
+    await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
 
-# --- Розсилка ---
+# --- Рассылка ---
 @dp.callback_query(F.data == "a_broadcast")
 async def adm_broadcast_start(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
         return
     await state.set_state(AdminStates.waiting_broadcast_msg)
     await call.message.edit_text(
-        "📢 <b>РОЗСИЛКА КОРИСТУВАЧАМ</b>\n\n"
-        "Надішліть повідомлення (текст, фото, відео), яке хочете розіслати всім.",
-        reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_panel")).as_markup()
+        "📢 <b>РАССЫЛКА ПОЛЬЗОВАТЕЛЯМ</b>\n\n"
+        "Отправь сообщение (текст, фото, видео), которое хочешь разослать всем.",
+        reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")).as_markup()
     )
 
 @dp.message(AdminStates.waiting_broadcast_msg)
 async def adm_broadcast_confirm(message: Message, state: FSMContext):
     await state.update_data(broadcast_msg_id=message.message_id, broadcast_chat_id=message.chat.id)
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="🚀 ПОЧАТИ", callback_data="confirm_broadcast_send"))
-    kb.row(InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_panel"))
-    await message.answer("👆 <b>Це прев'ю повідомлення.</b>\nПочати розсилку для всіх користувачів?",
+    kb.row(InlineKeyboardButton(text="🚀 НАЧАТЬ", callback_data="confirm_broadcast_send"))
+    kb.row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel"))
+    await message.answer("👆 <b>Это превью сообщения.</b>\nНачать рассылку для всех пользователей?",
                          reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "confirm_broadcast_send")
@@ -1250,13 +1252,13 @@ async def adm_broadcast_run(call: CallbackQuery, state: FSMContext):
     from_chat = data.get("broadcast_chat_id")
     await state.clear()
 
-    # Отримуємо всіх користувачів
+    # Получаем всех пользователей
     rows = db.execute("SELECT user_id FROM users", fetch=True)
     users = [row['user_id'] for row in rows]
     if not users:
-        return await call.message.answer("❌ Немає користувачів для розсилки.")
+        return await call.message.answer("❌ Нет пользователей для рассылки.")
 
-    await call.message.edit_text(f"⏳ Розсилка запущена для {len(users)} чол...")
+    await call.message.edit_text(f"⏳ Рассылка запущена для {len(users)} чел...")
     count = 0
     err = 0
     for uid in users:
@@ -1267,23 +1269,23 @@ async def adm_broadcast_run(call: CallbackQuery, state: FSMContext):
         except Exception:
             err += 1
     await call.message.answer(
-        f"✅ <b>Розсилка завершена!</b>\n\n"
-        f"📊 Успішно: {count}\n"
-        f"🚫 Помилок: {err}"
+        f"✅ <b>Рассылка завершена!</b>\n\n"
+        f"📊 Успешно: {count}\n"
+        f"🚫 Ошибок: {err}"
     )
-    db.log_admin(call.from_user.id, "broadcast", f"Успішно: {count}, помилок: {err}")
+    db.log_admin(call.from_user.id, "broadcast", f"Успешно: {count}, ошибок: {err}")
 
-# --- Видача зірок ---
+# --- Выдача звёзд ---
 @dp.callback_query(F.data == "a_give_stars")
 async def adm_give_stars_start(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
         return
     await state.set_state(AdminStates.waiting_give_data)
     await call.message.edit_text(
-        "💎 <b>ВИДАЧА ЗІРОК</b>\n\n"
-        "Введіть ID користувача і кількість зірок через пробіл.\n"
-        "Приклад: <code>8364667153 100</code>",
-        reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="❌ Скасувати", callback_data="admin_panel")).as_markup()
+        "💎 <b>ВЫДАЧА ЗВЁЗД</b>\n\n"
+        "Введи ID пользователя и количество звёзд через пробел.\n"
+        "Пример: <code>8364667153 100</code>",
+        reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="❌ Отмена", callback_data="admin_panel")).as_markup()
     )
 
 @dp.message(AdminStates.waiting_give_data)
@@ -1293,40 +1295,40 @@ async def adm_give_stars_process(message: Message, state: FSMContext):
     try:
         data = message.text.split()
         if len(data) != 2:
-            return await message.answer("❌ Введіть два числа: ID і суму.")
+            return await message.answer("❌ Введи два числа: ID и сумму.")
         target_id = int(data[0])
         amount = float(data[1])
         user = db.get_user(target_id)
         if not user:
-            return await message.answer(f"❌ Користувача з ID <code>{target_id}</code> не знайдено!")
+            return await message.answer(f"❌ Пользователь с ID <code>{target_id}</code> не найден!")
         db.add_stars(target_id, amount)
         await message.answer(
-            f"✅ <b>УСПІШНО!</b>\n\n"
-            f"Користувачу: <b>{user['first_name']}</b> (<code>{target_id}</code>)\n"
-            f"Нараховано: <b>{amount} ⭐</b>",
-            reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 В адмінку", callback_data="admin_panel")).as_markup()
+            f"✅ <b>УСПЕШНО!</b>\n\n"
+            f"Пользователю: <b>{user['first_name']}</b> (<code>{target_id}</code>)\n"
+            f"Начислено: <b>{amount} ⭐</b>",
+            reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 В админку", callback_data="admin_panel")).as_markup()
         )
         try:
-            await bot.send_message(target_id, f"🎁 Адміністратор нарахував вам <b>{amount} ⭐</b>!")
+            await bot.send_message(target_id, f"🎁 Администратор начислил тебе <b>{amount} ⭐</b>!")
         except:
             pass
-        db.log_admin(message.from_user.id, "give_stars", f"Користувачу {target_id} сума {amount}")
+        db.log_admin(message.from_user.id, "give_stars", f"Пользователю {target_id} сумма {amount}")
         await state.clear()
     except Exception as e:
-        await message.answer(f"❌ Помилка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
 
-# --- Створення промокоду ---
+# --- Создание промокода ---
 @dp.callback_query(F.data == "a_create_promo")
 async def adm_promo_start(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
         return
     await state.set_state(AdminStates.waiting_promo_data)
     await call.message.answer(
-        "Введіть дані промокоду через пробіл:\n"
-        "<code>КОД ТИП ЗНАЧЕННЯ КІЛЬКІСТЬ</code>\n\n"
-        "Приклади:\n"
-        "<code>GIFT1 stars 100 10</code> (100 зірок)\n"
-        "<code>ROZA gift 🌹_Роза 5</code> (5 троянд)"
+        "Введи данные промокода через пробел:\n"
+        "<code>КОД ТИП ЗНАЧЕНИЕ КОЛИЧЕСТВО</code>\n\n"
+        "Примеры:\n"
+        "<code>GIFT1 stars 100 10</code> (100 звёзд)\n"
+        "<code>ROZA gift 🌹_Роза 5</code> (5 роз)"
     )
 
 @dp.message(AdminStates.waiting_promo_data)
@@ -1335,11 +1337,11 @@ async def adm_promo_save(message: Message, state: FSMContext):
         code, r_type, val, uses = message.text.split()
         uses = int(uses)
         db.execute("INSERT INTO promo VALUES (?, ?, ?, ?)", (code, r_type, val, uses))
-        await message.answer(f"✅ Промокод <code>{code}</code> створено на {uses} використань!")
-        db.log_admin(message.from_user.id, "create_promo", f"Код {code}, тип {r_type}, значення {val}, ліміт {uses}")
+        await message.answer(f"✅ Промокод <code>{code}</code> создан на {uses} использований!")
+        db.log_admin(message.from_user.id, "create_promo", f"Код {code}, тип {r_type}, значение {val}, лимит {uses}")
         await state.clear()
     except Exception as e:
-        await message.answer("❌ Помилка! Формат: <code>КОД ТИП ЗНАЧЕННЯ КІЛЬКІСТЬ</code>")
+        await message.answer("❌ Ошибка! Формат: <code>КОД ТИП ЗНАЧЕНИЕ КОЛИЧЕСТВО</code>")
 
 # --- Пост в канал ---
 @dp.callback_query(F.data == "a_post_chan")
@@ -1348,8 +1350,8 @@ async def adm_post_start(call: CallbackQuery, state: FSMContext):
         return
     await state.set_state(AdminStates.waiting_channel_post)
     await call.message.edit_text(
-        "📢 Надішліть текст для публікації в каналі.\n"
-        "Бот автоматично додасть кнопку для отримання нагороди."
+        "📢 Отправь текст для публикации в канале.\n"
+        "Бот автоматически добавит кнопку для получения награды."
     )
 
 @dp.message(AdminStates.waiting_channel_post)
@@ -1357,11 +1359,11 @@ async def adm_post_end(message: Message, state: FSMContext):
     pid = f"v_{random.randint(100, 999)}"
     view_reward = float(db.get_config('view_reward', 0.3))
     kb = InlineKeyboardBuilder().row(
-        InlineKeyboardButton(text=f"💰 Забрати {view_reward} ⭐", callback_data=f"claim_{pid}")
+        InlineKeyboardButton(text=f"💰 Забрать {view_reward} ⭐", callback_data=f"claim_{pid}")
     ).as_markup()
     await bot.send_message(CHANNEL_ID, message.text, reply_markup=kb)
-    await message.answer("✅ Опубліковано!")
-    db.log_admin(message.from_user.id, "channel_post", f"Пост з id {pid}")
+    await message.answer("✅ Опубликовано!")
+    db.log_admin(message.from_user.id, "channel_post", f"Пост с id {pid}")
     await state.clear()
 
 @dp.callback_query(F.data.startswith("claim_"))
@@ -1370,14 +1372,14 @@ async def cb_claim(call: CallbackQuery):
     uid = call.from_user.id
     user = db.get_user(uid)
     if not user:
-        return await call.answer("❌ Запустіть бота командою /start", show_alert=True)
-    # Перевірка чи вже забирав
+        return await call.answer("❌ Запусти бота командой /start", show_alert=True)
+    # Проверка, забирал ли уже
     check = db.execute(
         "SELECT 1 FROM task_claims WHERE user_id = ? AND task_id = ?",
         (uid, f"post_{pid}"), fetchone=True
     )
     if check:
-        return await call.answer("❌ Ви вже забрали нагороду!", show_alert=True)
+        return await call.answer("❌ Ты уже забрал награду!", show_alert=True)
     view_reward = float(db.get_config('view_reward', 0.3))
     db.add_stars(uid, view_reward)
     db.execute("INSERT INTO task_claims (user_id, task_id) VALUES (?, ?)", (uid, f"post_{pid}"))
@@ -1389,52 +1391,52 @@ async def adm_fake(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         return
     gifts = db.get_gifts_prices()
-    fake_item = random.choice(list(gifts.keys())) if gifts else "Подарунок"
+    fake_item = random.choice(list(gifts.keys())) if gifts else "Подарок"
     fake_names = ["Dmitry_ST", "Sasha_Official", "Rich_Boy", "CryptoKing", "Masha_Stars", "Legenda_77"]
     name = random.choice(fake_names)
     fid = random.randint(1000000000, 9999999999)
     text = (
-        f"🎁 <b>ЗАЯВКА НА ВИВЕДЕННЯ </b>\n\n"
+        f"🎁 <b>ЗАЯВКА НА ВЫВОД </b>\n\n"
         f"👤 Юзер: @{name}\n"
         f"🆔 ID: <code>{fid}</code>\n"
         f"📦 Предмет: <b>{fake_item}</b>"
     )
     await bot.send_message(WITHDRAWAL_CHANNEL_ID, text, reply_markup=get_admin_decision_kb(0, "GIFT"))
-    await call.answer("✅ Реалістичний фейк відправлено!")
+    await call.answer("✅ Реалистичный фейк отправлен!")
     db.log_admin(call.from_user.id, "fake_withdraw", f"Фейк предмет {fake_item}")
 
-# --- Запуск лотереї ---
+# --- Запуск лотереи ---
 @dp.callback_query(F.data == "a_run_lottery")
 async def adm_run_lottery(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         return
     data = db.execute("SELECT pool, participants FROM lottery WHERE id = 1", fetchone=True)
     if not data or not data['participants']:
-        return await call.answer("❌ Немає учасників!", show_alert=True)
+        return await call.answer("❌ Нет участников!", show_alert=True)
     participants = [p for p in data['participants'].split(',') if p]
     winner_id = int(random.choice(participants))
     win_amount = data['pool'] * 0.8
     db.execute("UPDATE lottery SET pool = 0, participants = '' WHERE id = 1")
     db.add_stars(winner_id, win_amount)
-    await bot.send_message(winner_id, f"🥳 <b>ВІТАЄМО!</b>\nВи виграли в лотереї: <b>{win_amount:.2f} ⭐</b>")
-    await call.message.answer(f"✅ Лотерея завершена! Переможець: {winner_id}, сума: {win_amount:.2f}")
-    db.log_admin(call.from_user.id, "run_lottery", f"Переможець {winner_id}, сума {win_amount}")
+    await bot.send_message(winner_id, f"🥳 <b>ПОЗДРАВЛЯЕМ!</b>\nТы выиграл в лотерее: <b>{win_amount:.2f} ⭐</b>")
+    await call.message.answer(f"✅ Лотерея завершена! Победитель: {winner_id}, сумма: {win_amount:.2f}")
+    db.log_admin(call.from_user.id, "run_lottery", f"Победитель {winner_id}, сумма {win_amount}")
 
-# --- Меню налаштувань бота ---
+# --- Меню настроек бота ---
 @dp.callback_query(F.data == "a_config_menu")
 async def adm_config_menu(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         return
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="💰 Реферальна нагорода", callback_data="edit_config_ref_reward"))
-    kb.row(InlineKeyboardButton(text="👀 Нагорода за пост", callback_data="edit_config_view_reward"))
-    kb.row(InlineKeyboardButton(text="📅 Щоденний мін/макс", callback_data="edit_config_daily"))
-    kb.row(InlineKeyboardButton(text="🎰 Удача мін/макс/кулдаун", callback_data="edit_config_luck"))
-    kb.row(InlineKeyboardButton(text="💎 Суми виведення", callback_data="edit_config_withdraw"))
+    kb.row(InlineKeyboardButton(text="💰 Реферальная награда", callback_data="edit_config_ref_reward"))
+    kb.row(InlineKeyboardButton(text="👀 Награда за пост", callback_data="edit_config_view_reward"))
+    kb.row(InlineKeyboardButton(text="📅 Ежедневный мин/макс", callback_data="edit_config_daily"))
+    kb.row(InlineKeyboardButton(text="🎰 Удача мин/макс/кулдаун", callback_data="edit_config_luck"))
+    kb.row(InlineKeyboardButton(text="💎 Суммы вывода", callback_data="edit_config_withdraw"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
-    await call.message.edit_text("⚙️ <b>Налаштування бота</b>\nОберіть параметр для зміни:", reply_markup=kb.as_markup())
+    await call.message.edit_text("⚙️ <b>Настройки бота</b>\nВыбери параметр для изменения:", reply_markup=kb.as_markup())
 
-# Редагування реферальної нагороди
+# Редактирование реферальной награды
 @dp.callback_query(F.data == "edit_config_ref_reward")
 async def edit_ref_reward(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
@@ -1442,7 +1444,7 @@ async def edit_ref_reward(call: CallbackQuery, state: FSMContext):
     current = db.get_config('ref_reward', '5.0')
     await state.set_state(AdminStates.waiting_config_value)
     await state.update_data(config_key='ref_reward')
-    await call.message.answer(f"Поточне значення: <b>{current}</b>\nВведіть нову нагороду за реферала (число):")
+    await call.message.answer(f"Текущее значение: <b>{current}</b>\nВведи новую награду за реферала (число):")
 
 @dp.callback_query(F.data == "edit_config_view_reward")
 async def edit_view_reward(call: CallbackQuery, state: FSMContext):
@@ -1451,7 +1453,7 @@ async def edit_view_reward(call: CallbackQuery, state: FSMContext):
     current = db.get_config('view_reward', '0.3')
     await state.set_state(AdminStates.waiting_config_value)
     await state.update_data(config_key='view_reward')
-    await call.message.answer(f"Поточне значення: <b>{current}</b>\nВведіть нову нагороду за перегляд посту (число):")
+    await call.message.answer(f"Текущее значение: <b>{current}</b>\nВведи новую награду за просмотр поста (число):")
 
 @dp.callback_query(F.data == "edit_config_daily")
 async def edit_daily(call: CallbackQuery, state: FSMContext):
@@ -1462,8 +1464,8 @@ async def edit_daily(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_config_value)
     await state.update_data(config_key='daily')
     await call.message.answer(
-        f"Поточні значення: мін {current_min}, макс {current_max}\n"
-        "Введіть нові мінімум і максимум через пробіл (наприклад: 2 5):"
+        f"Текущие значения: мин {current_min}, макс {current_max}\n"
+        "Введи новые минимум и максимум через пробел (например: 2 5):"
     )
 
 @dp.callback_query(F.data == "edit_config_luck")
@@ -1476,8 +1478,8 @@ async def edit_luck(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_config_value)
     await state.update_data(config_key='luck')
     await call.message.answer(
-        f"Поточні значення: мін {current_min}, макс {current_max}, кулдаун {current_cd} сек\n"
-        "Введіть нові мінімум, максимум і кулдаун через пробіл (наприклад: 1 10 3600):"
+        f"Текущие значения: мин {current_min}, макс {current_max}, кулдаун {current_cd} сек\n"
+        "Введи новые минимум, максимум и кулдаун через пробел (например: 1 10 3600):"
     )
 
 @dp.callback_query(F.data == "edit_config_withdraw")
@@ -1488,8 +1490,8 @@ async def edit_withdraw(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminStates.waiting_config_value)
     await state.update_data(config_key='withdrawal_options')
     await call.message.answer(
-        f"Поточні суми: {current}\n"
-        "Введіть нові суми через кому (наприклад: 10,20,30,50,100):"
+        f"Текущие суммы: {current}\n"
+        "Введи новые суммы через запятую (например: 10,20,30,50,100):"
     )
 
 @dp.message(AdminStates.waiting_config_value)
@@ -1498,10 +1500,10 @@ async def set_config_value(message: Message, state: FSMContext):
     key = data.get('config_key')
     text = message.text.strip()
     try:
-        if key == 'ref_reward' or key == 'view_reward':
+        if key in ('ref_reward', 'view_reward'):
             new_val = float(text)
             db.set_config(key, str(new_val))
-            await message.answer(f"✅ Параметр <b>{key}</b> змінено на {new_val}")
+            await message.answer(f"✅ Параметр <b>{key}</b> изменён на {new_val}")
         elif key == 'daily':
             parts = text.split()
             if len(parts) != 2:
@@ -1510,7 +1512,7 @@ async def set_config_value(message: Message, state: FSMContext):
             max_val = float(parts[1])
             db.set_config('daily_min', str(min_val))
             db.set_config('daily_max', str(max_val))
-            await message.answer(f"✅ Щоденний бонус змінено: мін {min_val}, макс {max_val}")
+            await message.answer(f"✅ Ежедневный бонус изменён: мин {min_val}, макс {max_val}")
         elif key == 'luck':
             parts = text.split()
             if len(parts) != 3:
@@ -1521,50 +1523,50 @@ async def set_config_value(message: Message, state: FSMContext):
             db.set_config('luck_min', str(min_val))
             db.set_config('luck_max', str(max_val))
             db.set_config('luck_cooldown', str(cd))
-            await message.answer(f"✅ Удачу змінено: мін {min_val}, макс {max_val}, кулдаун {cd} сек")
+            await message.answer(f"✅ Удача изменена: мин {min_val}, макс {max_val}, кулдаун {cd} сек")
         elif key == 'withdrawal_options':
-            # перевіряємо, що це числа через кому
+            # проверяем, что это числа через запятую
             options = [int(x.strip()) for x in text.split(',') if x.strip()]
             if not options:
                 raise ValueError
             db.set_config('withdrawal_options', ','.join(str(x) for x in options))
-            await message.answer(f"✅ Суми виведення змінено: {', '.join(str(x) for x in options)}")
+            await message.answer(f"✅ Суммы вывода изменены: {', '.join(str(x) for x in options)}")
         else:
-            await message.answer("❌ Невідомий параметр")
+            await message.answer("❌ Неизвестный параметр")
             await state.clear()
             return
         db.log_admin(message.from_user.id, "change_config", f"{key} = {text}")
     except Exception:
-        await message.answer("❌ Помилка введення! Перевірте формат.")
+        await message.answer("❌ Ошибка ввода! Проверь формат.")
         return
     await state.clear()
-    await adm_config_menu(await message.answer("⚙️ Налаштування", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
+    await adm_config_menu(await message.answer("⚙️ Настройки", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
-# --- Глобальні бусти ---
+# --- Глобальные бусты ---
 @dp.callback_query(F.data == "a_global_boost_menu")
 async def adm_global_boost_menu(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         return
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="👥 Буст рефералів x2 (1 год)", callback_data="set_boost_ref_2_3600"))
-    kb.row(InlineKeyboardButton(text="👥 Буст рефералів x3 (3 год)", callback_data="set_boost_ref_3_10800"))
-    kb.row(InlineKeyboardButton(text="🎰 Буст ігор x2 (1 год)", callback_data="set_boost_game_2_3600"))
-    kb.row(InlineKeyboardButton(text="❌ Вимкнути буст рефералів", callback_data="disable_boost_ref"))
-    kb.row(InlineKeyboardButton(text="❌ Вимкнути буст ігор", callback_data="disable_boost_game"))
+    kb.row(InlineKeyboardButton(text="👥 Буст рефералов x2 (1 час)", callback_data="set_boost_ref_2_3600"))
+    kb.row(InlineKeyboardButton(text="👥 Буст рефералов x3 (3 часа)", callback_data="set_boost_ref_3_10800"))
+    kb.row(InlineKeyboardButton(text="🎰 Буст игр x2 (1 час)", callback_data="set_boost_game_2_3600"))
+    kb.row(InlineKeyboardButton(text="❌ Выключить буст рефералов", callback_data="disable_boost_ref"))
+    kb.row(InlineKeyboardButton(text="❌ Выключить буст игр", callback_data="disable_boost_game"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
-    await call.message.edit_text("📈 <b>Глобальні бусти</b>\nОберіть дію:", reply_markup=kb.as_markup())
+    await call.message.edit_text("📈 <b>Глобальные бусты</b>\nВыбери действие:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("set_boost_"))
 async def set_boost_handler(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
         return
     parts = call.data.split("_")
-    # Формат: set_boost_{type}_{mult}_{duration} або set_boost_{type}_{mult}
-    boost_type = parts[2]  # ref або game
+    # Формат: set_boost_{type}_{mult}_{duration} или set_boost_{type}_{mult}
+    boost_type = parts[2]  # ref или game
     mult = float(parts[3])
     duration = int(parts[4]) if len(parts) > 4 else None
     db.set_global_boost(boost_type, mult, duration)
-    await call.answer(f"✅ Буст {boost_type} x{mult} активовано!", show_alert=True)
+    await call.answer(f"✅ Буст {boost_type} x{mult} активирован!", show_alert=True)
     db.log_admin(call.from_user.id, "global_boost", f"{boost_type} x{mult} на {duration} сек")
     await adm_global_boost_menu(call)
 
@@ -1574,20 +1576,20 @@ async def disable_boost_handler(call: CallbackQuery):
         return
     boost_type = call.data.replace("disable_boost_", "")
     db.disable_global_boost(boost_type)
-    await call.answer(f"✅ Буст {boost_type} вимкнено!", show_alert=True)
-    db.log_admin(call.from_user.id, "global_boost", f"Вимкнено {boost_type}")
+    await call.answer(f"✅ Буст {boost_type} выключен!", show_alert=True)
+    db.log_admin(call.from_user.id, "global_boost", f"Выключен {boost_type}")
     await adm_global_boost_menu(call)
 
-# --- Редагування цін подарунків ---
+# --- Редактирование цен подарков ---
 @dp.callback_query(F.data == "a_edit_gifts")
 async def adm_edit_gifts(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
         return
     gifts = db.get_gifts_prices()
-    text = "🛍 <b>Поточні ціни подарунків:</b>\n"
+    text = "🛍 <b>Текущие цены подарков:</b>\n"
     for name, price in gifts.items():
         text += f"{name}: {price} ⭐\n"
-    text += "\nВведіть назву товару та нову ціну через пробіл (наприклад: 🧸 Мишка 50)."
+    text += "\nВведи название товара и новую цену через пробел (например: 🧸 Мишка 50)."
     await state.set_state(AdminStates.waiting_gift_price)
     await call.message.edit_text(text)
 
@@ -1598,32 +1600,32 @@ async def set_gift_price(message: Message, state: FSMContext):
     try:
         parts = message.text.rsplit(' ', 1)
         if len(parts) != 2:
-            return await message.answer("❌ Формат: назва ціна")
+            return await message.answer("❌ Формат: название цена")
         item_name = parts[0].strip()
         price = float(parts[1])
         gifts = db.get_gifts_prices()
         if item_name not in gifts:
-            return await message.answer("❌ Товар не знайдено в списку!")
+            return await message.answer("❌ Товар не найден в списке!")
         gifts[item_name] = price
         db.set_config('gifts_prices', json.dumps(gifts, ensure_ascii=False))
-        await message.answer(f"✅ Ціну для <b>{item_name}</b> змінено на {price} ⭐")
+        await message.answer(f"✅ Цена для <b>{item_name}</b> изменена на {price} ⭐")
         db.log_admin(message.from_user.id, "edit_gift_price", f"{item_name} = {price}")
     except Exception as e:
-        await message.answer(f"❌ Помилка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await adm_config_menu(await message.answer("⚙️ Налаштування", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
+    await adm_config_menu(await message.answer("⚙️ Настройки", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
-# --- Редагування ексклюзивних товарів ---
+# --- Редактирование эксклюзивных товаров ---
 @dp.callback_query(F.data == "a_edit_specials")
 async def adm_edit_specials(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
         return
     specials = db.get_special_items()
-    text = "📦 <b>Ексклюзивні товари (поточні ліміти та ціни):</b>\n"
+    text = "📦 <b>Эксклюзивные товары (текущие лимиты и цены):</b>\n"
     for key, info in specials.items():
-        text += f"{info['full_name']}: ціна {info['price']} ⭐, ліміт {info['limit']}\n"
-    text += "\nВведіть ключ товару (Ramen/Candle/Calendar), нову ціну і новий ліміт через пробіл.\n"
-    text += "Приклад: Ramen 300 20"
+        text += f"{info['full_name']}: цена {info['price']} ⭐, лимит {info['limit']}\n"
+    text += "\nВведи ключ товара (Ramen/Candle/Calendar), новую цену и новый лимит через пробел.\n"
+    text += "Пример: Ramen 300 20"
     await state.set_state(AdminStates.waiting_special_field)
     await call.message.edit_text(text)
 
@@ -1634,62 +1636,62 @@ async def set_special_item(message: Message, state: FSMContext):
     try:
         parts = message.text.split()
         if len(parts) != 3:
-            return await message.answer("❌ Формат: ключ ціна ліміт")
+            return await message.answer("❌ Формат: ключ цена лимит")
         key = parts[0].strip()
         price = float(parts[1])
         limit = int(parts[2])
         specials = db.get_special_items()
         if key not in specials:
-            return await message.answer("❌ Ключ не знайдено! Доступні: Ramen, Candle, Calendar")
+            return await message.answer("❌ Ключ не найден! Доступны: Ramen, Candle, Calendar")
         specials[key]['price'] = price
         specials[key]['limit'] = limit
         db.set_config('special_items', json.dumps(specials, ensure_ascii=False))
-        await message.answer(f"✅ Товар <b>{specials[key]['full_name']}</b> оновлено: ціна {price}, ліміт {limit}")
+        await message.answer(f"✅ Товар <b>{specials[key]['full_name']}</b> обновлён: цена {price}, лимит {limit}")
         db.log_admin(message.from_user.id, "edit_special", f"{key} price={price} limit={limit}")
     except Exception as e:
-        await message.answer(f"❌ Помилка: {e}")
+        await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
-    await adm_config_menu(await message.answer("⚙️ Налаштування", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
+    await adm_config_menu(await message.answer("⚙️ Настройки", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
-# ========== ОБРОБКА АДМІН-РІШЕНЬ ПО ЗАЯВКАХ ==========
+# ========== ОБРАБОТКА АДМИН-РЕШЕНИЙ ПО ЗАЯВКАМ ==========
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
 async def cb_adm_action(call: CallbackQuery):
     if call.from_user.id not in ADMIN_IDS:
-        return await call.answer("❌ Ви не адміністратор!", show_alert=True)
+        return await call.answer("❌ Ты не администратор!", show_alert=True)
     parts = call.data.split("_")
-    action = parts[1]  # app або rej
+    action = parts[1]  # app или rej
     target_uid = int(parts[2])
-    value = parts[3]   # сума або GIFT
+    value = parts[3]   # сумма или GIFT
 
     # Фейк
     if target_uid == 0:
-        status = "✅ ОДОБРЕНО (ФЕЙК)" if action == "app" else "❌ ВІДХИЛЕНО (ФЕЙК)"
-        await call.message.edit_text(f"{call.message.text}\n\n<b>Підсумок: {status}</b>")
-        return await call.answer("Фейк-вивід оброблено")
+        status = "✅ ОДОБРЕНО (ФЕЙК)" if action == "app" else "❌ ОТКЛОНЕНО (ФЕЙК)"
+        await call.message.edit_text(f"{call.message.text}\n\n<b>Итог: {status}</b>")
+        return await call.answer("Фейк-вывод обработан")
 
-    # Реальний користувач
+    # Реальный пользователь
     try:
         if action == "app":
-            reward_text = "подарунка" if value == "GIFT" else f"{value} ⭐"
-            await bot.send_message(target_uid, f"🎉 <b>Ваша заявка на виведення {reward_text} схвалена!</b>")
-            status_text = "✅ ПРИЙНЯТО"
-            db.log_admin(call.from_user.id, "withdraw_approve", f"Користувач {target_uid}, сума {value}")
+            reward_text = "подарка" if value == "GIFT" else f"{value} ⭐"
+            await bot.send_message(target_uid, f"🎉 <b>Твоя заявка на вывод {reward_text} одобрена!</b>")
+            status_text = "✅ ПРИНЯТО"
+            db.log_admin(call.from_user.id, "withdraw_approve", f"Пользователь {target_uid}, сумма {value}")
         else:
             if value == "GIFT":
-                await bot.send_message(target_uid, "❌ <b>Заявка на виведення подарунка відхилена.</b>\nЗв'яжіться з підтримкою.")
+                await bot.send_message(target_uid, "❌ <b>Заявка на вывод подарка отклонена.</b>\nСвяжись с поддержкой.")
             else:
                 db.add_stars(target_uid, float(value))
-                await bot.send_message(target_uid, f"❌ <b>Виплата {value} ⭐ відхилена.</b>\nЗірки повернуто на ваш баланс.")
-            status_text = "❌ ВІДХИЛЕНО"
-            db.log_admin(call.from_user.id, "withdraw_reject", f"Користувач {target_uid}, сума {value}")
+                await bot.send_message(target_uid, f"❌ <b>Выплата {value} ⭐ отклонена.</b>\nЗвёзды возвращены на твой баланс.")
+            status_text = "❌ ОТКЛОНЕНО"
+            db.log_admin(call.from_user.id, "withdraw_reject", f"Пользователь {target_uid}, сумма {value}")
 
         await call.message.edit_text(
-            f"{call.message.text}\n\n<b>Підсумок: {status_text}</b> (Адмін: @{call.from_user.username or call.from_user.id})"
+            f"{call.message.text}\n\n<b>Итог: {status_text}</b> (Админ: @{call.from_user.username or call.from_user.id})"
         )
         await call.answer("Готово!")
     except Exception as e:
-        logging.error(f"Помилка в адмін-дії: {e}")
-        await call.answer("❌ Помилка (можливо, юзер заблокував бота)", show_alert=True)
+        logging.error(f"Ошибка в админ-действии: {e}")
+        await call.answer("❌ Ошибка (возможно, юзер заблокировал бота)", show_alert=True)
 
 @dp.callback_query(F.data.startswith("adm_chat_"))
 async def cb_adm_chat(call: CallbackQuery):
@@ -1697,8 +1699,8 @@ async def cb_adm_chat(call: CallbackQuery):
         return
     uid = call.data.split("_")[2]
     if uid == "0":
-        return await call.answer("❌ Це фейк!", show_alert=True)
-    await call.message.answer(f"🔗 Зв'язок з юзером: tg://user?id={uid}")
+        return await call.answer("❌ Это фейк!", show_alert=True)
+    await call.message.answer(f"🔗 Связь с юзером: tg://user?id={uid}")
     await call.answer()
 
 # ========== ЗАПУСК ==========
@@ -1706,7 +1708,7 @@ async def web_handle(request):
     return web.Response(text="Bot Active")
 
 async def main():
-    # Налаштування веб-сервера для Render (необов'язково, але для health check)
+    # Настройка веб-сервера для Render (необязательно, но для health check)
     app = web.Application()
     app.router.add_get("/", web_handle)
     runner = web.AppRunner(app)
