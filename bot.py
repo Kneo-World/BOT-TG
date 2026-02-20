@@ -105,17 +105,14 @@ def _init_postgres(self):
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 0")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS total_earned REAL DEFAULT 0")
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT")
-            # остальные таблицы...
-            
-                # Инвентарь
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS inventory (
+            cur.execute("""
+            CREATE TABLE IF NOT EXISTS inventory (
                         user_id BIGINT,
                         item_name TEXT,
                         quantity INTEGER DEFAULT 1,
                         PRIMARY KEY (user_id, item_name)
-                    )
-                """)
+                        )
+                        """)
                 # Маркетплейс P2P
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS marketplace (
