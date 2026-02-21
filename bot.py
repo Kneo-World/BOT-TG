@@ -882,18 +882,13 @@ async def cb_top(call: CallbackQuery):
     rows = db.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10", fetch=True)
     text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
     for i, row in enumerate(rows, 1):
-        name = row['first_name'] or "***"  # если NULL, используем "***"
-        if len(name) > 3:
-            name = name[:3] + "***"
-        else:
-            name = name + "***"
+        name = row['username'] or "Без имени"
         stars = float(row['stars']) if row['stars'] is not None else 0
         text += f"{i}. {name} — <b>{stars:.1f} ⭐</b>\n"
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
     try:
         await call.message.edit_text(text, reply_markup=kb)
-    except Exception as e:
-        logging.error(f"Error editing message in top: {e}")
+    except:
         await call.message.answer(text, reply_markup=kb)
 
 # ========== ВЫВОД СРЕДСТВ ==========
