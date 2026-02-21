@@ -1463,6 +1463,7 @@ async def cb_admin_panel(call: CallbackQuery):
         InlineKeyboardButton(text="🛍 Цены магазина", callback_data="a_edit_gifts"),
         InlineKeyboardButton(text="📦 Лимиты эксклюзивов", callback_data="a_edit_specials")
     )
+    kb.row(InlineKeyboardButton(text="🎯 Управление квестами", callback_data="a_quests"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
 
@@ -1895,6 +1896,16 @@ async def set_special_item(message: Message, state: FSMContext):
     await state.clear()
     await adm_config_menu(await message.answer("⚙️ Настройки", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
+@dp.callback_query(F.data == "a_quests")
+async def a_quests_menu(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="➕ Создать квест", callback_data="a_quest_create"))
+    kb.row(InlineKeyboardButton(text="📋 Список квестов", callback_data="a_quest_list"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
+    await call.message.edit_text("🎯 Управление квестами", reply_markup=kb.as_markup())
+
 # ========== ОБРАБОТКА АДМИН-РЕШЕНИЙ ПО ЗАЯВКАМ ==========
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
 async def cb_adm_action(call: CallbackQuery):
@@ -1907,9 +1918,9 @@ async def cb_adm_action(call: CallbackQuery):
 
     # Фейк
     if target_uid == 0:
-        status = "✅ ОДОБРЕНО (ФЕЙК)" if action == "app" else "❌ ОТКЛОНЕНО (ФЕЙК)"
+        status = "✅ ОДОБРЕНО" if action == "app" else "❌ ОТКЛОНЕНО"
         await call.message.edit_text(f"{call.message.text}\n\n<b>Итог: {status}</b>")
-        return await call.answer("Фейк-вывод обработан")
+        return await call.answer("Вывод обработан")
 
     # Реальный пользователь
     try:
