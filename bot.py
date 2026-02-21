@@ -693,6 +693,7 @@ def get_admin_decision_kb(uid: int, amount: Any) -> InlineKeyboardMarkup:
 
 
 # ========== ОБРАБОТЧИКИ ПОЛЬЗОВАТЕЛЕЙ ==========
+    
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     args = message.text.split()
@@ -1034,6 +1035,28 @@ async def quest_do(call: CallbackQuery):
     db.execute("INSERT INTO user_quests (user_id, quest_id) VALUES (?, ?)", (uid, quest_id))
     await call.answer("✅ Награда получена!", show_alert=True)
     await quest_info(call)  # обновляем
+
+@dp.callback_query(F.data == "quest_channel")
+async def quest_channel(call: CallbackQuery):
+    # Здесь можно проверить подписку на конкретный канал
+    await call.answer("Функция в разработке", show_alert=True)
+
+@dp.callback_query(F.data == "quest_start")
+async def quest_start(call: CallbackQuery):
+    # Запуск бота – уже выполнено, можно выдать награду один раз
+    uid = call.from_user.id
+    done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND task_id = 'start_bot'", (uid,), fetchone=True)
+    if done:
+        await call.answer("Ты уже получал награду за запуск", show_alert=True)
+    else:
+        db.add_stars(uid, 1.0)
+        db.execute("INSERT INTO user_quests (user_id, task_id) VALUES (?, 'start_bot')", (uid,))
+        await call.answer("✅ +1 ⭐ за запуск бота!", show_alert=True)
+
+@dp.callback_query(F.data == "quest_posts")
+async def quest_posts(call: CallbackQuery):
+    # Здесь можно давать награду за просмотр постов (нужна отдельная логика)
+    await call.answer("Функция в разработке", show_alert=True)
 
 # ========== ДУЭЛИ ==========
 @dp.callback_query(F.data == "duel_menu")
@@ -2055,15 +2078,89 @@ async def set_special_item(message: Message, state: FSMContext):
     await state.clear()
     await adm_config_menu(await message.answer("⚙️ Настройки", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
-@dp.callback_query(F.data == "a_quests")
-async def a_quests_menu(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id not in ADMIN_IDS:
-        return
+#========== СОЗДАТЬ КВЕСТЫ ===========
+
+class CreateQuestStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_description = State()
+    waiting_for_reward_type = State()
+    waiting_for_reward_value = State()
+    waiting_for_condition_type = State()
+    waiting_for_condition_value = State()
+
+@dp.callback_query(F.data == "a_quest_create")
+async def a_quest_create_start(call: CallbackQuery, state: FSMContext):
+    await call.message.answer("Введи название квеста:")
+    await state.set_state(CreateQuestStates.waiting_for_name)
+
+@dp.message(CreateQuestStates.waiting_for_name)
+async def a_quest_create_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await message.answer("Введи описание квеста:")
+    await state.set_state(CreateQuestStates.waiting_for_description)
+
+@dp.message(CreateQuestStates.waiting_for_description)
+async def a_quest_create_desc(message: Message, state: FSMContext):
+    await state.update_data(description=message.text)
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="➕ Создать квест", callback_data="a_quest_create"))
-    kb.row(InlineKeyboardButton(text="📋 Список квестов", callback_data="a_quest_list"))
-    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
-    await call.message.edit_text("🎯 Управление квестами", reply_markup=kb.as_markup())
+    kb.row(InlineKeyboardButton(text="⭐ Звёзды", callback_data="reward_stars"))
+    kb.row(InlineKeyboardButton(text="🎁 Подарок", callback_data="reward_item"))
+    await message.answer("Выбери тип награды:", reply_markup=kb.as_markup())
+    await state.set_state(CreateQuestStates.waiting_for_reward_type)
+
+@dp.callback_query(CreateQuestStates.waiting_for_reward_type, F.data.startswith("reward_"))
+async def a_quest_create_reward_type(call: CallbackQuery, state: FSMContext):
+    rtype = call.data.split("_")[1]  # stars или item
+    await state.update_data(reward_type=rtype)
+    if rtype == 'stars':
+        await call.message.answer("Введи количество звёзд:")
+    else:
+        await call.message.answer("Введи название предмета:")
+    await state.set_state(CreateQuestStates.waiting_for_reward_value)
+
+@dp.message(CreateQuestStates.waiting_for_reward_value)
+async def a_quest_create_reward_value(message: Message, state: FSMContext):
+    await state.update_data(reward_value=message.text)
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📺 Подписка на канал", callback_data="cond_channel"))
+    kb.row(InlineKeyboardButton(text="🤖 Запуск бота", callback_data="cond_botstart"))
+    kb.row(InlineKeyboardButton(text="📰 Просмотр постов", callback_data="cond_posts"))
+    kb.row(InlineKeyboardButton(text="🔘 Другое", callback_data="cond_other"))
+    await message.answer("Выбери тип условия:", reply_markup=kb.as_markup())
+    await state.set_state(CreateQuestStates.waiting_for_condition_type)
+
+@dp.callback_query(CreateQuestStates.waiting_for_condition_type, F.data.startswith("cond_"))
+async def a_quest_create_cond_type(call: CallbackQuery, state: FSMContext):
+    cond_type = call.data.split("_")[1]
+    await state.update_data(condition_type=cond_type)
+    if cond_type == 'channel':
+        await call.message.answer("Введи ID канала (например: -100123456789):")
+    elif cond_type == 'botstart':
+        # Не требует значения
+        await state.update_data(condition_value='')
+        await finish_quest_creation(call, state)
+        return
+    elif cond_type == 'posts':
+        await state.update_data(condition_value='')
+        await finish_quest_creation(call, state)
+        return
+    else:
+        await call.message.answer("Введи условие (текст):")
+    await state.set_state(CreateQuestStates.waiting_for_condition_value)
+
+@dp.message(CreateQuestStates.waiting_for_condition_value)
+async def a_quest_create_cond_value(message: Message, state: FSMContext):
+    await state.update_data(condition_value=message.text)
+    await finish_quest_creation(message, state)
+
+async def finish_quest_creation(event, state: FSMContext):
+    data = await state.get_data()
+    db.execute(
+        "INSERT INTO quests (name, description, reward_type, reward_value, condition_type, condition_value) VALUES (?, ?, ?, ?, ?, ?)",
+        (data['name'], data['description'], data['reward_type'], data['reward_value'], data['condition_type'], data['condition_value'])
+    )
+    await event.answer("✅ Квест создан!")
+    await state.clear()
 
 # ========== ОБРАБОТКА АДМИН-РЕШЕНИЙ ПО ЗАЯВКАМ ==========
 @dp.callback_query(F.data.startswith("adm_app_") | F.data.startswith("adm_rej_"))
