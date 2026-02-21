@@ -944,22 +944,21 @@ async def cb_luck(call: CallbackQuery):
 @dp.callback_query(F.data == "tasks")
 async def cb_tasks(call: CallbackQuery):
     uid = call.from_user.id
-    # Получаем активные квесты
+    # Получаем активные квесты из БД
     quests = db.execute("SELECT * FROM quests WHERE is_active = 1", fetch=True)
-    
+
     kb = InlineKeyboardBuilder()
     for q in quests:
-        # Проверяем, выполнен ли квест пользователем
         done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, q['id']), fetchone=True)
         status = "✅" if done else "⏳"
         kb.row(InlineKeyboardButton(text=f"{status} {q['name']}", callback_data=f"quest_info_{q['id']}"))
-    
-    # Добавляем разделы (постоянные)
+
+    # Постоянные разделы
     kb.row(InlineKeyboardButton(text="📺 Подписка на канал", callback_data="quest_channel"))
     kb.row(InlineKeyboardButton(text="🤖 Запустить бота", callback_data="quest_start"))
     kb.row(InlineKeyboardButton(text="📰 Посмотреть посты", callback_data="quest_posts"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-    
+
     await call.message.edit_text(
         "🎯 <b>КВЕСТЫ</b>\n\n"
         "Здесь ты можешь выполнять задания и получать награды.\n"
@@ -973,16 +972,16 @@ async def quest_info(call: CallbackQuery):
     q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
     if not q:
         return await call.answer("Квест не найден", show_alert=True)
-    
+
     uid = call.from_user.id
     done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, quest_id), fetchone=True)
-    
+
     text = f"<b>{q['name']}</b>\n{q['description']}\n\n"
     if q['reward_type'] == 'stars':
         text += f"Награда: {q['reward_value']} ⭐"
     else:
         text += f"Награда: {q['reward_value']}"
-    
+
     kb = InlineKeyboardBuilder()
     if not done:
         kb.row(InlineKeyboardButton(text="✅ Выполнить", callback_data=f"quest_do_{quest_id}"))
@@ -996,48 +995,45 @@ async def quest_do(call: CallbackQuery):
     q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
     if not q:
         return await call.answer("Квест не найден", show_alert=True)
-    
-    # Проверяем условие
+
+    # Проверяем, не выполнен ли уже
+    done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, quest_id), fetchone=True)
+    if done:
+        return await call.answer("Ты уже выполнил этот квест", show_alert=True)
+
+    # Проверка условия (упрощённо, можно расширить)
     condition_met = False
     if q['condition_type'] == 'channel_sub':
-        # Проверяем подписку на канал
         try:
             chat_member = await bot.get_chat_member(chat_id=q['condition_value'], user_id=uid)
             condition_met = chat_member.status in ['member', 'administrator', 'creator']
         except:
             condition_met = False
     elif q['condition_type'] == 'bot_start':
-        # Проверяем, что пользователь запустил бота (всегда true, т.к. он уже в боте)
-        condition_met = True
+        condition_met = True  # всегда true, т.к. пользователь в боте
     elif q['condition_type'] == 'post_view':
-        # Проверяем, просматривал ли посты (можно через отдельную таблицу post_views)
-        condition_met = True  # упрощённо
-    elif q['condition_type'] == 'custom':
-        # Кастомные проверки – можно расширить
+        # Здесь нужна отдельная логика, для примера считаем true
         condition_met = True
     else:
-        condition_met = True
-    
+        condition_met = True  # для кастомных квестов
+
     if not condition_met:
         return await call.answer("❌ Условие не выполнено", show_alert=True)
-    
-    # Выдаём награду
+
+    # Выдача награды
     if q['reward_type'] == 'stars':
         db.add_stars(uid, float(q['reward_value']))
     else:
-        # Предмет
         item = q['reward_value']
         existing = db.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item), fetchone=True)
         if existing:
             db.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (uid, item))
         else:
             db.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (uid, item))
-    
-    # Отмечаем как выполненный
+
     db.execute("INSERT INTO user_quests (user_id, quest_id) VALUES (?, ?)", (uid, quest_id))
-    
     await call.answer("✅ Награда получена!", show_alert=True)
-    await quest_info(call)  # обновляем информацию
+    await quest_info(call)  # обновляем
 
 # ========== ДУЭЛИ ==========
 @dp.callback_query(F.data == "duel_menu")
