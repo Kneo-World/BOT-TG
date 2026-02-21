@@ -718,6 +718,67 @@ async def casino_menu(call: CallbackQuery):
         reply_markup=kb.as_markup()
     )
 
+@dp.callback_query(F.data.startswith("casino_spin_"))
+async def casino_spin(call: CallbackQuery):
+    uid = call.from_user.id
+    user = db.get_user_safe(uid)
+    if not user:
+        return await call.answer("Ошибка: вас нет в базе", show_alert=True)
+    
+    # Получаем количество спинов
+    spin_count = int(call.data.split("_")[2])  # 1 или 10
+    premium = user.get('premium_mode', 0)
+    
+    # Стоимость
+    if spin_count == 1:
+        cost = 2
+    else:
+        cost = 15  # 10 спинов со скидкой
+    
+    if premium:
+        cost *= 2
+    
+    if user['stars'] < cost:
+        return await call.answer(f"❌ Недостаточно ⭐! Нужно {cost}", show_alert=True)
+    
+    # Списываем стоимость
+    db.add_stars(uid, -cost)
+    
+    # Выполняем вращения
+    total_win = 0
+    results = []
+    for _ in range(spin_count):
+        # Случайный выигрыш от 0 до 5 (базовый)
+        win = random.uniform(0, 5)
+        if premium:
+            win *= 2
+        total_win += win
+        results.append(round(win, 2))
+    
+    # Начисляем выигрыш
+    db.add_stars(uid, total_win)
+    
+    # Формируем сообщение
+    if spin_count == 1:
+        msg = f"🎰 Выигрыш: <b>{total_win:.2f} ⭐</b>"
+    else:
+        msg = f"🎰 Результаты 10 спинов: {', '.join(map(str, results))}\nИтого: <b>{total_win:.2f} ⭐</b>"
+    
+    await call.message.answer(msg)
+    await casino_menu(call)  # возвращаем в меню казино
+
+@dp.callback_query(F.data == "casino_premium_toggle")
+async def casino_premium_toggle(call: CallbackQuery):
+    uid = call.from_user.id
+    user = db.get_user_safe(uid)
+    if not user:
+        return
+    new_mode = 0 if user.get('premium_mode', 0) else 1
+    db.execute("UPDATE users SET premium_mode = ? WHERE user_id = ?", (new_mode, uid))
+    status = "включён" if new_mode else "выключен"
+    await call.answer(f"💎 Премиум режим {status}", show_alert=True)
+    await casino_menu(call)
+
 @dp.callback_query(F.data == "luck")
 async def cb_luck(call: CallbackQuery):
     logging.info(f"Luck callback from {call.from_user.id}")
