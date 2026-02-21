@@ -90,11 +90,13 @@ class Database:
                         ref_boost REAL DEFAULT 1.0,
                         is_active INTEGER DEFAULT 0,
                         total_earned REAL DEFAULT 0,
+                        premium_mode INTEGER DEFAULT 0,
                         referred_by BIGINT
                     )
                 """)
                 # Добавляем недостающие колонки (если их нет)
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT")
+                cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_mode INTEGER DEFAULT 0")
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS first_name TEXT")
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS stars REAL DEFAULT 0")
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referrals INTEGER DEFAULT 0")
@@ -233,6 +235,7 @@ class Database:
                 ref_boost REAL DEFAULT 1.0,
                 is_active INTEGER DEFAULT 0,
                 total_earned REAL DEFAULT 0,
+                premium_mode INTEGER DEFAULT 0,
                 referred_by INTEGER
             )
         """)
