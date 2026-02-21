@@ -532,7 +532,7 @@ def get_main_kb(uid: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="👥 Друзья", callback_data="referrals")
     )
     builder.row(
-        InlineKeyboardButton(text="🎰 Удача", callback_data="luck"),
+        InlineKeyboardButton(text="🎰 Казино", callback_data="casino_menu"),  # заменили Удача
         InlineKeyboardButton(text="📆 Ежедневно", callback_data="daily"),
         InlineKeyboardButton(text="🎟 Лотерея", callback_data="lottery")
     )
