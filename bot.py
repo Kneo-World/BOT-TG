@@ -631,6 +631,12 @@ class P2PSaleStates(StatesGroup):
 class CheckStates(StatesGroup):
     waiting_for_password = State()
 
+class CreateCheckStates(StatesGroup):
+    waiting_for_type = State()
+    waiting_for_value = State()
+    waiting_for_password = State()
+    waiting_for_max_uses = State()
+
 # ========== ИНИЦИАЛИЗАЦИЯ БОТА ==========
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -1106,14 +1112,14 @@ async def cb_buy_ticket(call: CallbackQuery):
     await cb_lottery(call)
 
 # ========== ТОП ==========
+
 @dp.callback_query(F.data == "top")
 async def cb_top(call: CallbackQuery):
-    logging.info(f"Top callback from {call.from_user.id}")
     await call.answer()
     rows = db.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10", fetch=True)
     text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
     for i, row in enumerate(rows, 1):
-        name = row['username'] or "Без имени"
+        name = row['first_name'] or "Без имени"
         stars = float(row['stars']) if row['stars'] is not None else 0
         text += f"{i}. {name} — <b>{stars:.1f} ⭐</b>\n"
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
@@ -1481,145 +1487,118 @@ async def promo_process(message: Message, state: FSMContext):
 
 #============== ЧЕКИ ===============
 
-# ========== ЧЕКИ (ПОЛНЫЙ КОД) ==========
+@dp.callback_query(F.data == "create_check")
+async def create_check_start(call: CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="⭐ Звёзды", callback_data="check_type_stars"))
+    kb.row(InlineKeyboardButton(text="🎁 Подарок", callback_data="check_type_item"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text("Выбери тип чека:", reply_markup=kb.as_markup())
+    await state.set_state(CreateCheckStates.waiting_for_type)
 
+@dp.callback_query(CreateCheckStates.waiting_for_type, F.data.startswith("check_type_"))
+async def create_check_type(call: CallbackQuery, state: FSMContext):
+    ctype = call.data.split("_")[2]  # stars или item
+    await state.update_data(ctype=ctype)
+    if ctype == "stars":
+        await call.message.answer("Введи количество звёзд (например: 50):")
+    else:
+        # Показываем список предметов из инвентаря
+        uid = call.from_user.id
+        items = db.execute("SELECT item_name, quantity FROM inventory WHERE user_id = ?", (uid,), fetch=True)
+        if not items:
+            await state.clear()
+            return await call.answer("У тебя нет предметов для создания чека!", show_alert=True)
+        text = "Твои предметы:\n" + "\n".join([f"{it['item_name']} ({it['quantity']} шт.)" for it in items])
+        text += "\n\nВведи название предмета, который хочешь использовать:"
+        await call.message.answer(text)
+    await state.set_state(CreateCheckStates.waiting_for_value)
 
-# 2. Функция создания чека
-async def create_check(creator_id: int, ctype: str, value: str, password: str = '', max_uses: int = 1) -> str:
-    """
-    Создаёт чек и отправляет сообщение с кнопкой "Забрать".
-    - creator_id: ID создателя (для отправки сообщения)
-    - ctype: 'stars' или 'item'
-    - value: количество звёзд (str) или название предмета
-    - password: пароль (если нужен)
-    - max_uses: максимальное количество активаций
-    Возвращает ID созданного чека.
-    """
-    # Генерируем уникальный ID чека (8 символов)
+@dp.message(CreateCheckStates.waiting_for_value)
+async def create_check_value(message: Message, state: FSMContext):
+    data = await state.get_data()
+    ctype = data.get('ctype')
+    value = message.text.strip()
+    uid = message.from_user.id
+
+    if ctype == 'stars':
+        try:
+            amount = float(value)
+            if amount <= 0:
+                raise ValueError
+            user = db.get_user_safe(uid)
+            if user['stars'] < amount:
+                await message.answer("❌ Недостаточно звёзд!")
+                return
+            # Временно списывать не будем, спишем при создании
+        except:
+            await message.answer("❌ Введи положительное число")
+            return
+    else:
+        # Проверяем наличие предмета
+        item = value
+        res = db.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item), fetchone=True)
+        if not res or res['quantity'] <= 0:
+            await message.answer("❌ У тебя нет такого предмета!")
+            return
+
+    await state.update_data(value=value)
+    await message.answer("Введи пароль (если не нужен, отправь '-'):")
+    await state.set_state(CreateCheckStates.waiting_for_password)
+
+@dp.message(CreateCheckStates.waiting_for_password)
+async def create_check_password(message: Message, state: FSMContext):
+    password = message.text.strip()
+    if password == '-':
+        password = ''
+    await state.update_data(password=password)
+    await message.answer("Введи количество активаций (число):")
+    await state.set_state(CreateCheckStates.waiting_for_max_uses)
+
+@dp.message(CreateCheckStates.waiting_for_max_uses)
+async def create_check_max_uses(message: Message, state: FSMContext):
+    try:
+        max_uses = int(message.text.strip())
+        if max_uses <= 0:
+            raise ValueError
+    except:
+        await message.answer("❌ Введи положительное целое число")
+        return
+
+    data = await state.get_data()
+    ctype = data['ctype']
+    value = data['value']
+    password = data['password']
+    uid = message.from_user.id
+
+    # Списываем средства
+    if ctype == 'stars':
+        db.add_stars(uid, -float(value))
+    else:
+        # Списываем предмет
+        res = db.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, value), fetchone=True)
+        if res['quantity'] > 1:
+            db.execute("UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?", (uid, value))
+        else:
+            db.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, value))
+
+    # Генерируем ID чека
     check_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-    
-    # Сохраняем в БД
     db.execute(
         "INSERT INTO checks (id, creator_id, type, value, password, max_uses) VALUES (?, ?, ?, ?, ?, ?)",
-        (check_id, creator_id, ctype, value, password, max_uses)
+        (check_id, uid, ctype, value, password, max_uses)
     )
-    
-    # Формируем сообщение с кнопкой
+
+    # Отправляем сообщение с чеком
     text = f"🎁 Чек на {value} "
-    if ctype == 'stars':
-        text += "⭐"
-    else:
-        text += "предмет"
-    
+    text += "⭐" if ctype == 'stars' else "предмет"
     if password:
         text += "\n🔒 Защищён паролем"
-    
-    kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="🎁 Забрать", callback_data=f"claim_{check_id}"))
-    
-    # Отправляем сообщение создателю (можно изменить на любой чат)
-    await bot.send_message(creator_id, text, reply_markup=kb.as_markup())
-    return check_id
+    kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🎁 Забрать", callback_data=f"claim_{check_id}")).as_markup()
+    await message.answer(f"✅ Чек создан! Вот ссылка на него:")
+    await message.answer(text, reply_markup=kb)
 
-
-# 3. Функция выдачи награды (общая для безпарольных и с паролем)
-async def give_check_reward(event, check: dict, user_id: int):
-    """
-    Выдаёт награду по чеку.
-    event: CallbackQuery или Message (для ответа)
-    check: словарь с данными чека из БД
-    user_id: ID получателя
-    """
-    if check['type'] == 'stars':
-        amount = float(check['value'])
-        db.add_stars(user_id, amount)
-        reward_text = f"{amount} ⭐"
-    else:
-        item = check['value']
-        # Добавляем предмет в инвентарь
-        existing = db.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (user_id, item), fetchone=True)
-        if existing:
-            db.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (user_id, item))
-        else:
-            db.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (user_id, item))
-        reward_text = f"предмет {item}"
-
-    # Обновляем счётчик использований
-    db.execute("UPDATE checks SET used = used + 1 WHERE id = ?", (check['id'],))
-    db.execute("INSERT INTO check_uses (check_id, user_id) VALUES (?, ?)", (check['id'], user_id))
-
-    # Отправляем сообщение о успехе
-    if isinstance(event, CallbackQuery):
-        await event.message.answer(f"✅ Вы получили награду: {reward_text}!")
-        await event.answer()
-    else:
-        await event.answer(f"✅ Вы получили награду: {reward_text}!")
-
-
-# 4. Обработчик нажатия на кнопку чека
-@dp.callback_query(lambda c: c.data and c.data.startswith('claim_'))
-async def process_check_claim(call: CallbackQuery, state: FSMContext):
-    check_id = call.data.split('_')[1]  # получаем ID чека
-    user_id = call.from_user.id
-
-    # Получаем информацию о чеке из БД
-    check = db.execute("SELECT * FROM checks WHERE id = ? AND is_active = 1", (check_id,), fetchone=True)
-    if not check:
-        await call.answer("❌ Чек не найден или неактивен", show_alert=True)
-        return
-
-    # Проверяем, не превышен ли лимит использований
-    if check['used'] >= check['max_uses']:
-        await call.answer("❌ Этот чек уже использован максимальное количество раз", show_alert=True)
-        return
-
-    # Проверяем, не активировал ли уже этот пользователь чек
-    used = db.execute("SELECT 1 FROM check_uses WHERE check_id = ? AND user_id = ?", (check_id, user_id), fetchone=True)
-    if used:
-        await call.answer("❌ Вы уже активировали этот чек", show_alert=True)
-        return
-
-    # Если есть пароль, запрашиваем его
-    if check['password']:
-        await state.set_state(CheckStates.waiting_for_password)
-        await state.update_data(check_id=check_id)
-        await call.message.answer("🔒 Введите пароль для этого чека:")
-        await call.answer()
-        return
-
-    # Если пароля нет, выдаём награду сразу
-    await give_check_reward(call, check, user_id)
-
-
-# 5. Обработчик ввода пароля
-@dp.message(CheckStates.waiting_for_password)
-async def process_check_password(message: Message, state: FSMContext):
-    data = await state.get_data()
-    check_id = data.get('check_id')
-    
-    # Получаем чек из БД
-    check = db.execute("SELECT * FROM checks WHERE id = ? AND is_active = 1", (check_id,), fetchone=True)
-    if not check:
-        await message.answer("❌ Чек не найден. Попробуйте снова.")
-        await state.clear()
-        return
-
-    # Проверяем пароль
-    if message.text != check['password']:
-        await message.answer("❌ Неверный пароль. Попробуйте ещё раз или отправьте /cancel")
-        return
-
-    # Пароль верный – выдаём награду
-    user_id = message.from_user.id
-    await give_check_reward(message, check, user_id)
     await state.clear()
-
-
-# 6. Команда отмены ввода пароля
-@dp.message(Command("cancel"), CheckStates.waiting_for_password)
-async def cancel_check_password(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Ввод пароля отменён.")
 
 # ========== АДМИН ПАНЕЛЬ ==========
 @dp.callback_query(F.data == "admin_panel")
