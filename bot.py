@@ -892,81 +892,104 @@ async def cb_luck(call: CallbackQuery):
         await call.message.answer("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
 
 # ========== КВЕСТЫ ==========
+
 @dp.callback_query(F.data == "tasks")
 async def cb_tasks(call: CallbackQuery):
-    logging.info(f"Tasks callback from {call.from_user.id}")
-    await call.answer()
     uid = call.from_user.id
-    row = db.execute("SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0", (uid,), fetchone=True)
-    active_refs = row['cnt'] if row else 0
-    row = db.execute("SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?", (uid,), fetchone=True)
-    tickets_bought = row['cnt'] if row else 0
-
+    # Получаем активные квесты
+    quests = db.execute("SELECT * FROM quests WHERE is_active = 1", fetch=True)
+    
     kb = InlineKeyboardBuilder()
-    status1 = "✅ Готово" if active_refs >= 3 else f"⏳ {active_refs}/3"
-    kb.row(InlineKeyboardButton(text=f"📈 Стахановец: {status1}", callback_data="claim_task_1"))
-    status2 = "✅ Готово" if tickets_bought >= 5 else f"⏳ {tickets_bought}/5"
-    kb.row(InlineKeyboardButton(text=f"🎰 Ловец удачи: {status2}", callback_data="claim_task_2"))
-    kb.row(InlineKeyboardButton(text="📸 Отправить видео-отзыв (100 ⭐)", url=f"https://t.me/{SUPPORT_USERNAME.replace('@','')}"))
+    for q in quests:
+        # Проверяем, выполнен ли квест пользователем
+        done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, q['id']), fetchone=True)
+        status = "✅" if done else "⏳"
+        kb.row(InlineKeyboardButton(text=f"{status} {q['name']}", callback_data=f"quest_info_{q['id']}"))
+    
+    # Добавляем разделы (постоянные)
+    kb.row(InlineKeyboardButton(text="📺 Подписка на канал", callback_data="quest_channel"))
+    kb.row(InlineKeyboardButton(text="🤖 Запустить бота", callback_data="quest_start"))
+    kb.row(InlineKeyboardButton(text="📰 Посмотреть посты", callback_data="quest_posts"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-
-    try:
-        await call.message.edit_text(
-            "🎯 <b>ЗАДАНИЯ И КВЕСТЫ</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "💰 Забирай награды за активность!\n"
-            "Награды начисляются мгновенно.",
-            reply_markup=kb.as_markup()
-        )
-    except Exception as e:
-        logging.error(f"Error editing message in tasks: {e}")
-        await call.message.answer(
-            "🎯 <b>ЗАДАНИЯ И КВЕСТЫ</b>\n"
-            "━━━━━━━━━━━━━━━━━━\n"
-            "💰 Забирай награды за активность!\n"
-            "Награды начисляются мгновенно.",
-            reply_markup=kb.as_markup()
-        )
-
-
-@dp.callback_query(F.data.startswith("claim_task_"))
-async def claim_task(call: CallbackQuery):
-    task_num = call.data.split("_")[2]
-    uid = call.from_user.id
-
-    # Проверка, выполнено ли уже
-    check = db.execute(
-        "SELECT 1 FROM task_claims WHERE user_id = ? AND task_id = ?",
-        (uid, task_num), fetchone=True
+    
+    await call.message.edit_text(
+        "🎯 <b>КВЕСТЫ</b>\n\n"
+        "Здесь ты можешь выполнять задания и получать награды.\n"
+        "Нажми на квест, чтобы узнать подробности.",
+        reply_markup=kb.as_markup()
     )
-    if check:
-        return await call.answer("❌ Вы уже получили награду за этот квест!", show_alert=True)
 
-    if task_num == "1":
-        row = db.execute(
-            "SELECT COUNT(*) as cnt FROM users WHERE referred_by = ? AND total_earned >= 1.0",
-            (uid,), fetchone=True
-        )
-        active_refs = row['cnt'] if row else 0
-        if active_refs < 3:
-            return await call.answer("❌ Нужно 3 активных реферала!", show_alert=True)
-        reward = 15.0
-    elif task_num == "2":
-        row = db.execute(
-            "SELECT COUNT(*) as cnt FROM lottery_history WHERE user_id = ?",
-            (uid,), fetchone=True
-        )
-        tickets_bought = row['cnt'] if row else 0
-        if tickets_bought < 5:
-            return await call.answer("❌ Нужно купить 5 билетов!", show_alert=True)
-        reward = 3.0
+@dp.callback_query(F.data.startswith("quest_info_"))
+async def quest_info(call: CallbackQuery):
+    quest_id = int(call.data.split("_")[2])
+    q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
+    if not q:
+        return await call.answer("Квест не найден", show_alert=True)
+    
+    uid = call.from_user.id
+    done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, quest_id), fetchone=True)
+    
+    text = f"<b>{q['name']}</b>\n{q['description']}\n\n"
+    if q['reward_type'] == 'stars':
+        text += f"Награда: {q['reward_value']} ⭐"
     else:
-        return
+        text += f"Награда: {q['reward_value']}"
+    
+    kb = InlineKeyboardBuilder()
+    if not done:
+        kb.row(InlineKeyboardButton(text="✅ Выполнить", callback_data=f"quest_do_{quest_id}"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="tasks"))
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
 
-    db.execute("INSERT INTO task_claims (user_id, task_id) VALUES (?, ?)", (uid, task_num))
-    db.add_stars(uid, reward)
-    await call.answer(f"✅ Начислено {reward} ⭐!", show_alert=True)
-    await cb_tasks(call)
+@dp.callback_query(F.data.startswith("quest_do_"))
+async def quest_do(call: CallbackQuery):
+    quest_id = int(call.data.split("_")[2])
+    uid = call.from_user.id
+    q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
+    if not q:
+        return await call.answer("Квест не найден", show_alert=True)
+    
+    # Проверяем условие
+    condition_met = False
+    if q['condition_type'] == 'channel_sub':
+        # Проверяем подписку на канал
+        try:
+            chat_member = await bot.get_chat_member(chat_id=q['condition_value'], user_id=uid)
+            condition_met = chat_member.status in ['member', 'administrator', 'creator']
+        except:
+            condition_met = False
+    elif q['condition_type'] == 'bot_start':
+        # Проверяем, что пользователь запустил бота (всегда true, т.к. он уже в боте)
+        condition_met = True
+    elif q['condition_type'] == 'post_view':
+        # Проверяем, просматривал ли посты (можно через отдельную таблицу post_views)
+        condition_met = True  # упрощённо
+    elif q['condition_type'] == 'custom':
+        # Кастомные проверки – можно расширить
+        condition_met = True
+    else:
+        condition_met = True
+    
+    if not condition_met:
+        return await call.answer("❌ Условие не выполнено", show_alert=True)
+    
+    # Выдаём награду
+    if q['reward_type'] == 'stars':
+        db.add_stars(uid, float(q['reward_value']))
+    else:
+        # Предмет
+        item = q['reward_value']
+        existing = db.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item), fetchone=True)
+        if existing:
+            db.execute("UPDATE inventory SET quantity = quantity + 1 WHERE user_id = ? AND item_name = ?", (uid, item))
+        else:
+            db.execute("INSERT INTO inventory (user_id, item_name, quantity) VALUES (?, ?, 1)", (uid, item))
+    
+    # Отмечаем как выполненный
+    db.execute("INSERT INTO user_quests (user_id, quest_id) VALUES (?, ?)", (uid, quest_id))
+    
+    await call.answer("✅ Награда получена!", show_alert=True)
+    await quest_info(call)  # обновляем информацию
 
 # ========== ДУЭЛИ ==========
 @dp.callback_query(F.data == "duel_menu")
