@@ -691,6 +691,30 @@ async def cb_daily(call: CallbackQuery):
     await call.answer(f"✅ День {new_streak}! Получено: {reward} ⭐", show_alert=True)
     await call.message.edit_text("⭐ <b>Главное меню</b>", reply_markup=get_main_kb(uid))
 
+@dp.callback_query(F.data == "casino_menu")
+async def casino_menu(call: CallbackQuery):
+    uid = call.from_user.id
+    # Проверяем, активен ли премиум-режим для пользователя (храним в БД или в сессии)
+    # Для простоты добавим флаг в таблицу users: premium_mode BOOLEAN DEFAULT FALSE
+    # Но пока не будем усложнять, сделаем выбор через кнопки
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="🎰 1 spin (2 ⭐)", callback_data="casino_spin_1"),
+        InlineKeyboardButton(text="🎰 10 spins (15 ⭐)", callback_data="casino_spin_10")
+    )
+    kb.row(
+        InlineKeyboardButton(text="💎 Премиум режим (x2 ставка, x2 выигрыш)", callback_data="casino_premium_toggle")
+    )
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
+    await call.message.edit_text(
+        "🎰 <b>КАЗИНО</b>\n\n"
+        "Выбери режим игры:\n"
+        "• 1 спин — 2 ⭐\n"
+        "• 10 спинов — 15 ⭐ (экономия 5 ⭐)\n"
+        "• Премиум режим — все ставки и выигрыши удваиваются",
+        reply_markup=kb.as_markup()
+    )
+
 @dp.callback_query(F.data == "luck")
 async def cb_luck(call: CallbackQuery):
     logging.info(f"Luck callback from {call.from_user.id}")
