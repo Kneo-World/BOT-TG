@@ -628,7 +628,8 @@ def get_main_kb(uid: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🎁 Промокод", callback_data="use_promo")
     )
     builder.row(
-        InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw")
+    InlineKeyboardButton(text="💸 Вывести", callback_data="withdraw"),
+    InlineKeyboardButton(text="🧾 Создать чек", callback_data="create_check")
     )
     if uid in ADMIN_IDS:
         builder.row(InlineKeyboardButton(text="👑 Админ Панель", callback_data="admin_panel"))
