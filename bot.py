@@ -329,6 +329,45 @@ class Database:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS quests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        description TEXT,
+        reward_type TEXT,
+        reward_value TEXT,
+        condition_type TEXT,
+        condition_value TEXT,
+        is_active INTEGER DEFAULT 1
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_quests (
+        user_id INTEGER,
+        quest_id INTEGER,
+        completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (user_id, quest_id)
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS checks (
+        id TEXT PRIMARY KEY,
+        creator_id INTEGER,
+        type TEXT,
+        value TEXT,
+        password TEXT,
+        max_uses INTEGER,
+        used INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1
+        )
+        """)
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS check_uses (
+        check_id TEXT,
+        user_id INTEGER,
+        PRIMARY KEY (check_id, user_id)
+        )
+        """)
         # Заполняем config значениями по умолчанию
         default_config = {
             'ref_reward': ('5.0', 'Награда за активного реферала (звезд)'),
