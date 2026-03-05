@@ -640,6 +640,17 @@ class AdminStates(StatesGroup):
     waiting_special_item_key = State()
     waiting_special_field = State()
 
+class AdminQuestStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_description = State()
+    waiting_for_type = State()
+    waiting_for_target = State()
+    waiting_for_reward = State()
+    waiting_for_next = State()
+
+class QuestStates(StatesGroup):
+    waiting_for_forward = State()
+
 class PromoStates(StatesGroup):
     waiting_for_code = State()
 
@@ -649,14 +660,6 @@ class P2PSaleStates(StatesGroup):
 class CheckStates(StatesGroup):
     waiting_for_password = State()
 
-class CreateCheckStates(StatesGroup):
-    waiting_for_type = State()
-    waiting_for_value = State()
-    waiting_for_password = State()
-    waiting_for_max_uses = State()
-
-class QuestStates(StatesGroup):
-    waiting_for_forward = State()
 
 # ========== ИНИЦИАЛИЗАЦИЯ БОТА ==========
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
