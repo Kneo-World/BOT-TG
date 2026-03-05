@@ -1671,7 +1671,7 @@ async def create_check_type(call: CallbackQuery, state: FSMContext):
         await call.message.answer(text)
     await state.set_state(CreateCheckStates.waiting_for_value)
 
-@dp.message(AdminQuestStates.waiting_for_value)
+@dp.message(AdminQuestStates.waiting_for_name)
 async def create_check_value(message: Message, state: FSMContext):
     data = await state.get_data()
     ctype = data.get('ctype')
