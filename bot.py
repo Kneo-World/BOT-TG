@@ -77,6 +77,10 @@ class Database:
         with self.conn:
             with self.conn.cursor() as cur:
                 # Таблица пользователей
+                cur.execute("ALTER TABLE quests ADD COLUMN IF NOT EXISTS type TEXT")
+                cur.execute("ALTER TABLE quests ADD COLUMN IF NOT EXISTS target TEXT")
+                cur.execute("ALTER TABLE quests ADD COLUMN IF NOT EXISTS reward REAL")
+                cur.execute("ALTER TABLE quests ADD COLUMN IF NOT EXISTS next_quest_id INTEGER")
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS users (
                         user_id BIGINT PRIMARY KEY,
@@ -258,10 +262,15 @@ class Database:
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_ref_until', '', 'Время окончания глобального буста рефералов (ISO)') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_mult', '1.0', 'Глобальный множитель выигрышей в играх') ON CONFLICT DO NOTHING")
                 cur.execute("INSERT INTO config (key, value, description) VALUES ('global_game_until', '', 'Время окончания глобального буста игр') ON CONFLICT DO NOTHING")
+                cur.execute("ALTER TABLE user_quests ADD COLUMN IF NOT EXISTS task_id TEXT")
 
     def _init_sqlite(self):
         cursor = self.conn.cursor()
         # Таблица пользователей
+        cursor.execute("ALTER TABLE quests ADD COLUMN type TEXT")
+        cursor.execute("ALTER TABLE quests ADD COLUMN target TEXT")
+        cursor.execute("ALTER TABLE quests ADD COLUMN reward REAL")
+        cursor.execute("ALTER TABLE quests ADD COLUMN next_quest_id INTEGER")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -451,6 +460,10 @@ class Database:
         PRIMARY KEY (user_id, quest_id)
         )
         """)
+        try:
+            cursor.execute("ALTER TABLE user_quests ADD COLUMN task_id TEXT")
+        except sqlite3.OperationalError:
+            pass
         # Заполняем config значениями по умолчанию
         default_config = {
             'ref_reward': ('5.0', 'Награда за активного реферала (звезд)'),
