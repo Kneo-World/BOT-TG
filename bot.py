@@ -824,24 +824,24 @@ async def cb_daily(call: CallbackQuery):
 @dp.callback_query(F.data == "casino_menu")
 async def casino_menu(call: CallbackQuery):
     uid = call.from_user.id
-    # Проверяем, активен ли премиум-режим для пользователя (храним в БД или в сессии)
-    # Для простоты добавим флаг в таблицу users: premium_mode BOOLEAN DEFAULT FALSE
-    # Но пока не будем усложнять, сделаем выбор через кнопки
+    user = db.get_user_safe(uid)
+    premium = user.get('premium_mode', 0)
+    status = "💎 Премиум (x2 ставка, x2 выигрыш)" if premium else "⚪ Обычный режим"
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(text="🎰 1 spin (2 ⭐)", callback_data="casino_spin_1"),
         InlineKeyboardButton(text="🎰 10 spins (15 ⭐)", callback_data="casino_spin_10")
     )
     kb.row(
-        InlineKeyboardButton(text="💎 Премиум режим (x2 ставка, x2 выигрыш)", callback_data="casino_premium_toggle")
+        InlineKeyboardButton(text=f"{'💎' if premium else '⚪'} Премиум режим", callback_data="casino_premium_toggle")
     )
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text(
-        "🎰 <b>КАЗИНО</b>\n\n"
-        "Выбери режим игры:\n"
-        "• 1 спин — 2 ⭐\n"
-        "• 10 спинов — 15 ⭐ (экономия 5 ⭐)\n"
-        "• Премиум режим — все ставки и выигрыши удваиваются",
+        f"🎰 <b>КАЗИНО</b>\n\n"
+        f"{status}\n"
+        f"• 1 спин — 2 ⭐\n"
+        f"• 10 спинов — 15 ⭐ (экономия 5 ⭐)\n"
+        f"• Премиум режим — все ставки и выигрыши удваиваются",
         reply_markup=kb.as_markup()
     )
 
@@ -851,49 +851,38 @@ async def casino_spin(call: CallbackQuery):
     user = db.get_user_safe(uid)
     if not user:
         return await call.answer("Ошибка: вас нет в базе", show_alert=True)
-    
-    # Получаем количество спинов
-    spin_count = int(call.data.split("_")[2])  # 1 или 10
+
+    spin_count = int(call.data.split("_")[2])
     premium = user.get('premium_mode', 0)
-    
-    # Стоимость
-    if spin_count == 1:
-        cost = 2
-    else:
-        cost = 15  # 10 спинов со скидкой
-    
-    if premium:
-        cost *= 2
-    
+
+    # Базовая стоимость
+    base_cost = 2 if spin_count == 1 else 15
+    cost = base_cost * (2 if premium else 1)
+
     if user['stars'] < cost:
         return await call.answer(f"❌ Недостаточно ⭐! Нужно {cost}", show_alert=True)
-    
-    # Списываем стоимость
+
     db.add_stars(uid, -cost)
-    
-    # Выполняем вращения
+
     total_win = 0
     results = []
     for _ in range(spin_count):
-        # Случайный выигрыш от 0 до 5 (базовый)
         win = random.uniform(0, 5)
         if premium:
             win *= 2
         total_win += win
         results.append(round(win, 2))
-    
-    # Начисляем выигрыш
+
     db.add_stars(uid, total_win)
-    
-    # Формируем сообщение
+
     if spin_count == 1:
         msg = f"🎰 Выигрыш: <b>{total_win:.2f} ⭐</b>"
     else:
         msg = f"🎰 Результаты 10 спинов: {', '.join(map(str, results))}\nИтого: <b>{total_win:.2f} ⭐</b>"
-    
-    await call.message.answer(msg)
-    await casino_menu(call)  # возвращаем в меню казино
 
+    await call.message.answer(msg)
+    await casino_menu(call)
+    
 @dp.callback_query(F.data == "casino_premium_toggle")
 async def casino_premium_toggle(call: CallbackQuery):
     uid = call.from_user.id
@@ -1135,10 +1124,11 @@ async def cb_buy_ticket(call: CallbackQuery):
 @dp.callback_query(F.data == "top")
 async def cb_top(call: CallbackQuery):
     await call.answer()
-    rows = db.execute("SELECT first_name, stars FROM users ORDER BY stars DESC LIMIT 10", fetch=True)
+    rows = db.execute("SELECT user_id, username, first_name, stars FROM users ORDER BY stars DESC LIMIT 10", fetch=True)
     text = "🏆 <b>ТОП-10 МАГНАТОВ</b>\n━━━━━━━━━━━━━━━━━━\n"
     for i, row in enumerate(rows, 1):
-        name = row['first_name'] or "Без имени"
+        # Используем username, если есть, иначе first_name
+        name = row['username'] or row['first_name'] or "Без имени"
         stars = float(row['stars']) if row['stars'] is not None else 0
         text += f"{i}. {name} — <b>{stars:.1f} ⭐</b>\n"
     kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu")).as_markup()
@@ -1590,33 +1580,51 @@ async def create_check_max_uses(message: Message, state: FSMContext):
     password = data['password']
     uid = message.from_user.id
 
-    # Списываем средства
     if ctype == 'stars':
-        db.add_stars(uid, -float(value))
-    else:
-        # Списываем предмет
-        res = db.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, value), fetchone=True)
-        if res['quantity'] > 1:
-            db.execute("UPDATE inventory SET quantity = quantity - 1 WHERE user_id = ? AND item_name = ?", (uid, value))
+        total_amount = float(value)
+        user = db.get_user_safe(uid)
+        if user['stars'] < total_amount:
+            await message.answer("❌ Недостаточно звёзд!")
+            await state.clear()
+            return
+        db.add_stars(uid, -total_amount)
+        stored_value = str(total_amount)
+    else:  # предмет
+        item = value
+        res = db.execute("SELECT quantity FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item), fetchone=True)
+        if not res or res['quantity'] < max_uses:
+            await message.answer(f"❌ У тебя недостаточно предметов! Нужно {max_uses} шт.")
+            await state.clear()
+            return
+        if res['quantity'] > max_uses:
+            db.execute("UPDATE inventory SET quantity = quantity - ? WHERE user_id = ? AND item_name = ?", (max_uses, uid, item))
         else:
-            db.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, value))
+            db.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item))
+        stored_value = item
 
-    # Генерируем ID чека
     check_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     db.execute(
         "INSERT INTO checks (id, creator_id, type, value, password, max_uses) VALUES (?, ?, ?, ?, ?, ?)",
-        (check_id, uid, ctype, value, password, max_uses)
+        (check_id, uid, ctype, stored_value, password, max_uses)
     )
 
-    # Отправляем сообщение с чеком
-    text = f"🎁 Чек на {value} "
-    text += "⭐" if ctype == 'stars' else "предмет"
+    bot_username = (await bot.get_me()).username
+    deep_link = f"https://t.me/{bot_username}?start=check_{check_id}"
+
+    if ctype == 'stars':
+        per_use = total_amount / max_uses
+        text = f"🎁 Чек на {per_use:.2f} ⭐ (всего {max_uses} активаций, общая сумма {total_amount} ⭐)"
+    else:
+        text = f"🎁 Чек на {stored_value} (всего {max_uses} активаций)"
+
     if password:
         text += "\n🔒 Защищён паролем"
-    kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🎁 Забрать", callback_data=f"claim_{check_id}")).as_markup()
-    await message.answer(f"✅ Чек создан! Вот ссылка на него:")
-    await message.answer(text, reply_markup=kb)
+    text += f"\n\n🔗 Ссылка на чек: {deep_link}"
 
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🎁 Забрать", callback_data=f"claim_{check_id}"))
+    kb.row(InlineKeyboardButton(text="📤 Отправить другу", url=f"https://t.me/share/url?url={deep_link}&text=Забери%20чек!"))
+    await message.answer(text, reply_markup=kb.as_markup())
     await state.clear()
 
 # ========== АДМИН ПАНЕЛЬ ==========
