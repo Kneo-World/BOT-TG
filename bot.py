@@ -642,6 +642,9 @@ class CreateCheckStates(StatesGroup):
     waiting_for_password = State()
     waiting_for_max_uses = State()
 
+class QuestStates(StatesGroup):
+    waiting_for_forward = State()
+
 # ========== ИНИЦИАЛИЗАЦИЯ БОТА ==========
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
@@ -958,25 +961,21 @@ async def cb_luck(call: CallbackQuery):
 @dp.callback_query(F.data == "tasks")
 async def cb_tasks(call: CallbackQuery):
     uid = call.from_user.id
-    # Получаем активные квесты из БД
-    quests = db.execute("SELECT * FROM quests WHERE is_active = 1", fetch=True)
+    # Получаем все активные квесты, отсортированные по порядку (можно по id)
+    quests = db.execute("SELECT * FROM quests WHERE is_active = 1 ORDER BY id", fetch=True)
 
+    # Определяем, какие квесты доступны: либо первый невыполненный, либо все, если они независимы.
+    # Для простоты покажем все, но отметим выполненные.
     kb = InlineKeyboardBuilder()
     for q in quests:
         done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, q['id']), fetchone=True)
         status = "✅" if done else "⏳"
         kb.row(InlineKeyboardButton(text=f"{status} {q['name']}", callback_data=f"quest_info_{q['id']}"))
 
-    # Постоянные разделы
-    kb.row(InlineKeyboardButton(text="📺 Подписка на канал", callback_data="quest_channel"))
-    kb.row(InlineKeyboardButton(text="🤖 Запустить бота", callback_data="quest_start"))
-    kb.row(InlineKeyboardButton(text="📰 Посмотреть посты", callback_data="quest_posts"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
-
     await call.message.edit_text(
         "🎯 <b>КВЕСТЫ</b>\n\n"
-        "Здесь ты можешь выполнять задания и получать награды.\n"
-        "Нажми на квест, чтобы узнать подробности.",
+        "Выполняй задания и получай награды!",
         reply_markup=kb.as_markup()
     )
 
@@ -990,17 +989,126 @@ async def quest_info(call: CallbackQuery):
     uid = call.from_user.id
     done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, quest_id), fetchone=True)
 
-    text = f"<b>{q['name']}</b>\n{q['description']}\n\n"
-    if q['reward_type'] == 'stars':
-        text += f"Награда: {q['reward_value']} ⭐"
-    else:
-        text += f"Награда: {q['reward_value']}"
+    text = f"<b>{q['name']}</b>\n{q['description']}\n\nНаграда: {q['reward']} ⭐"
 
     kb = InlineKeyboardBuilder()
     if not done:
-        kb.row(InlineKeyboardButton(text="✅ Выполнить", callback_data=f"quest_do_{quest_id}"))
+        # Кнопка "Выполнить" в зависимости от типа
+        if q['type'] == 'subscription':
+            kb.row(InlineKeyboardButton(text="📺 Проверить подписку", callback_data=f"quest_check_sub_{quest_id}"))
+        elif q['type'] == 'bot_forward':
+            kb.row(InlineKeyboardButton(text="🤖 Переслать сообщение", callback_data=f"quest_forward_{quest_id}"))
+        elif q['type'] == 'post_view':
+            kb.row(InlineKeyboardButton(text="📰 Я посмотрел", callback_data=f"quest_view_{quest_id}"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="tasks"))
     await call.message.edit_text(text, reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("quest_check_sub_"))
+async def quest_check_sub(call: CallbackQuery):
+    quest_id = int(call.data.split("_")[3])
+    q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
+    if not q:
+        return await call.answer("Квест не найден", show_alert=True)
+
+    uid = call.from_user.id
+    # Проверяем, не выполнен ли уже
+    done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, quest_id), fetchone=True)
+    if done:
+        await call.answer("Ты уже выполнил этот квест", show_alert=True)
+        return
+
+    # Проверяем подписку на канал (target должен быть ID канала)
+    try:
+        chat_member = await bot.get_chat_member(chat_id=int(q['target']), user_id=uid)
+        if chat_member.status in ['member', 'administrator', 'creator']:
+            # Начисляем награду
+            db.add_stars(uid, float(q['reward']))
+            db.execute("INSERT INTO user_quests (user_id, quest_id) VALUES (?, ?)", (uid, quest_id))
+            await call.answer(f"✅ +{q['reward']} ⭐ за подписку!", show_alert=True)
+            # Если есть следующий квест, предложить его
+            if q['next_quest_id']:
+                next_q = db.execute("SELECT * FROM quests WHERE id = ?", (q['next_quest_id'],), fetchone=True)
+                if next_q:
+                    await call.message.answer(f"🎯 Следующий квест: {next_q['name']}")
+        else:
+            await call.answer("❌ Ты не подписан на канал", show_alert=True)
+    except Exception as e:
+        await call.answer(f"Ошибка проверки: {e}", show_alert=True)
+
+@dp.callback_query(F.data.startswith("quest_forward_"))
+async def quest_forward_start(call: CallbackQuery, state: FSMContext):
+    quest_id = int(call.data.split("_")[2])
+    q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
+    if not q:
+        return await call.answer("Квест не найден", show_alert=True)
+
+    uid = call.from_user.id
+    done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, quest_id), fetchone=True)
+    if done:
+        await call.answer("Ты уже выполнил этот квест", show_alert=True)
+        return
+
+    await state.set_state(QuestStates.waiting_for_forward)
+    await state.update_data(quest_id=quest_id, target=q['target'])
+    await call.message.answer("📤 Перешли сюда любое сообщение из указанного бота/канала (нажми 'переслать' и выбери этот чат).")
+    await call.answer()
+
+@dp.message(QuestStates.waiting_for_forward)
+async def quest_forward_message(message: Message, state: FSMContext):
+    data = await state.get_data()
+    quest_id = data['quest_id']
+    target = data['target']  # ожидаем ID канала/бота
+
+    # Проверяем, что сообщение переслано
+    if not message.forward_from_chat and not message.forward_from:
+        await message.answer("❌ Это не пересланное сообщение. Попробуй ещё раз.")
+        return
+
+    # Определяем ID источника пересылки
+    from_id = None
+    if message.forward_from_chat:
+        from_id = message.forward_from_chat.id
+    elif message.forward_from:
+        from_id = message.forward_from.id
+
+    if str(from_id) != target:
+        await message.answer(f"❌ Сообщение должно быть из целевого источника (ID {target}).")
+        return
+
+    # Всё ок, выдаём награду
+    uid = message.from_user.id
+    q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
+    if q:
+        db.add_stars(uid, float(q['reward']))
+        db.execute("INSERT INTO user_quests (user_id, quest_id) VALUES (?, ?)", (uid, quest_id))
+        await message.answer(f"✅ +{q['reward']} ⭐ за выполнение!")
+        if q['next_quest_id']:
+            next_q = db.execute("SELECT * FROM quests WHERE id = ?", (q['next_quest_id'],), fetchone=True)
+            if next_q:
+                await message.answer(f"🎯 Следующий квест: {next_q['name']}")
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("quest_view_"))
+async def quest_view(call: CallbackQuery):
+    quest_id = int(call.data.split("_")[2])
+    q = db.execute("SELECT * FROM quests WHERE id = ?", (quest_id,), fetchone=True)
+    if not q:
+        return await call.answer("Квест не найден", show_alert=True)
+
+    uid = call.from_user.id
+    done = db.execute("SELECT 1 FROM user_quests WHERE user_id = ? AND quest_id = ?", (uid, quest_id), fetchone=True)
+    if done:
+        await call.answer("Ты уже выполнил этот квест", show_alert=True)
+        return
+
+    # Выдаём награду
+    db.add_stars(uid, float(q['reward']))
+    db.execute("INSERT INTO user_quests (user_id, quest_id) VALUES (?, ?)", (uid, quest_id))
+    await call.answer(f"✅ +{q['reward']} ⭐ за просмотр!", show_alert=True)
+    if q['next_quest_id']:
+        next_q = db.execute("SELECT * FROM quests WHERE id = ?", (q['next_quest_id'],), fetchone=True)
+        if next_q:
+            await call.message.answer(f"🎯 Следующий квест: {next_q['name']}")
 
 @dp.callback_query(F.data.startswith("quest_do_"))
 async def quest_do(call: CallbackQuery):
@@ -1626,15 +1734,18 @@ async def create_check_max_uses(message: Message, state: FSMContext):
             db.execute("DELETE FROM inventory WHERE user_id = ? AND item_name = ?", (uid, item))
         stored_value = item
 
+    # Генерируем ID чека
     check_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     db.execute(
         "INSERT INTO checks (id, creator_id, type, value, password, max_uses) VALUES (?, ?, ?, ?, ?, ?)",
         (check_id, uid, ctype, stored_value, password, max_uses)
     )
 
+    # Создаём глубокую ссылку
     bot_username = (await bot.get_me()).username
     deep_link = f"https://t.me/{bot_username}?start=check_{check_id}"
 
+    # Формируем текст
     if ctype == 'stars':
         per_use = total_amount / max_uses
         text = f"🎁 Чек на {per_use:.2f} ⭐ (всего {max_uses} активаций, общая сумма {total_amount} ⭐)"
@@ -1645,12 +1756,13 @@ async def create_check_max_uses(message: Message, state: FSMContext):
         text += "\n🔒 Защищён паролем"
     text += f"\n\n🔗 Ссылка на чек: {deep_link}"
 
+    # Кнопки
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🎁 Забрать", callback_data=f"claim_{check_id}"))
     kb.row(InlineKeyboardButton(text="📤 Отправить другу", url=f"https://t.me/share/url?url={deep_link}&text=Забери%20чек!"))
     await message.answer(text, reply_markup=kb.as_markup())
     await state.clear()
-
+    
 # ========== АДМИН ПАНЕЛЬ ==========
 @dp.callback_query(F.data == "admin_panel")
 async def cb_admin_panel(call: CallbackQuery):
@@ -2124,18 +2236,85 @@ async def set_special_item(message: Message, state: FSMContext):
 
 #========== СОЗДАТЬ КВЕСТЫ ===========
 
-class CreateQuestStates(StatesGroup):
+class CreateQuestAdmin(StatesGroup):
     waiting_for_name = State()
     waiting_for_description = State()
-    waiting_for_reward_type = State()
-    waiting_for_reward_value = State()
-    waiting_for_condition_type = State()
-    waiting_for_condition_value = State()
+    waiting_for_type = State()
+    waiting_for_target = State()
+    waiting_for_reward = State()
+    waiting_for_next = State()
 
 @dp.callback_query(F.data == "a_quest_create")
 async def a_quest_create_start(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id not in ADMIN_IDS:
+        return
     await call.message.answer("Введи название квеста:")
-    await state.set_state(CreateQuestStates.waiting_for_name)
+    await state.set_state(CreateQuestAdmin.waiting_for_name)
+
+@dp.message(CreateQuestAdmin.waiting_for_name)
+async def a_quest_create_name(message: Message, state: FSMContext):
+    await state.update_data(name=message.text)
+    await message.answer("Введи описание квеста:")
+    await state.set_state(CreateQuestAdmin.waiting_for_description)
+
+@dp.message(CreateQuestAdmin.waiting_for_description)
+async def a_quest_create_desc(message: Message, state: FSMContext):
+    await state.update_data(description=message.text)
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📺 Подписка на канал", callback_data="quest_type_sub"))
+    kb.row(InlineKeyboardButton(text="🤖 Пересылка из бота", callback_data="quest_type_forward"))
+    kb.row(InlineKeyboardButton(text="📰 Просмотр поста", callback_data="quest_type_view"))
+    await message.answer("Выбери тип квеста:", reply_markup=kb.as_markup())
+    await state.set_state(CreateQuestAdmin.waiting_for_type)
+
+@dp.callback_query(CreateQuestAdmin.waiting_for_type, F.data.startswith("quest_type_"))
+async def a_quest_create_type(call: CallbackQuery, state: FSMContext):
+    qtype = call.data.split("_")[2]  # sub, forward, view
+    await state.update_data(type=qtype)
+    if qtype == 'sub':
+        await call.message.answer("Введи ID канала (например: -100123456789):")
+    elif qtype == 'forward':
+        await call.message.answer("Введи ID бота или канала, откуда нужно переслать сообщение:")
+    else:  # view
+        await state.update_data(target='')
+        await call.message.answer("Введи награду (количество звёзд):")
+        await state.set_state(CreateQuestAdmin.waiting_for_reward)
+        return
+    await state.set_state(CreateQuestAdmin.waiting_for_target)
+
+@dp.message(CreateQuestAdmin.waiting_for_target)
+async def a_quest_create_target(message: Message, state: FSMContext):
+    await state.update_data(target=message.text)
+    await message.answer("Введи награду (количество звёзд):")
+    await state.set_state(CreateQuestAdmin.waiting_for_reward)
+
+@dp.message(CreateQuestAdmin.waiting_for_reward)
+async def a_quest_create_reward(message: Message, state: FSMContext):
+    try:
+        reward = float(message.text)
+    except:
+        await message.answer("❌ Введи число")
+        return
+    await state.update_data(reward=reward)
+    await message.answer("Введи ID следующего квеста (если нет, отправь 0):")
+    await state.set_state(CreateQuestAdmin.waiting_for_next)
+
+@dp.message(CreateQuestAdmin.waiting_for_next)
+async def a_quest_create_next(message: Message, state: FSMContext):
+    try:
+        next_id = int(message.text)
+        if next_id == 0:
+            next_id = None
+    except:
+        await message.answer("❌ Введи число или 0")
+        return
+    data = await state.get_data()
+    db.execute(
+        "INSERT INTO quests (name, description, type, target, reward, next_quest_id) VALUES (?, ?, ?, ?, ?, ?)",
+        (data['name'], data['description'], data['type'], data.get('target', ''), data['reward'], next_id)
+    )
+    await message.answer("✅ Квест создан!")
+    await state.clear()
 
 @dp.message(CreateQuestStates.waiting_for_name)
 async def a_quest_create_name(message: Message, state: FSMContext):
