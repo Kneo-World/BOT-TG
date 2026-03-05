@@ -2250,7 +2250,7 @@ async def set_special_item(message: Message, state: FSMContext):
     await state.clear()
     await adm_config_menu(await message.answer("⚙️ Настройки", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
-# ========== АДМИНКА: СОЗДАНИЕ КВЕСТА ==========
+# ========== АДМИНКА: СОЗДАНИЕ КВЕСТА (ИСПРАВЛЕНО) ==========
 
 @dp.callback_query(F.data == "a_quest_create")
 async def a_quest_create_start(call: CallbackQuery, state: FSMContext):
