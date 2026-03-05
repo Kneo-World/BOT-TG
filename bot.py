@@ -1653,7 +1653,7 @@ async def create_check_start(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text("Выбери тип чека:", reply_markup=kb.as_markup())
     await state.set_state(CreateCheckStates.waiting_for_type)
 
-@dp.callback_query(CreateCheckStates.waiting_for_type, F.data.startswith("check_type_"))
+@dp.callback_query(AdminQuestStates.waiting_for_type, F.data.startswith("check_type_"))
 async def create_check_type(call: CallbackQuery, state: FSMContext):
     ctype = call.data.split("_")[2]  # stars или item
     await state.update_data(ctype=ctype)
@@ -1671,7 +1671,7 @@ async def create_check_type(call: CallbackQuery, state: FSMContext):
         await call.message.answer(text)
     await state.set_state(CreateCheckStates.waiting_for_value)
 
-@dp.message(CreateCheckStates.waiting_for_value)
+@dp.message(AdminQuestStates.waiting_for_value)
 async def create_check_value(message: Message, state: FSMContext):
     data = await state.get_data()
     ctype = data.get('ctype')
@@ -1703,7 +1703,7 @@ async def create_check_value(message: Message, state: FSMContext):
     await message.answer("Введи пароль (если не нужен, отправь '-'):")
     await state.set_state(CreateCheckStates.waiting_for_password)
 
-@dp.message(CreateCheckStates.waiting_for_password)
+@dp.message(AdminQuestStates.waiting_for_password)
 async def create_check_password(message: Message, state: FSMContext):
     password = message.text.strip()
     if password == '-':
