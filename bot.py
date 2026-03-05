@@ -216,7 +216,7 @@ class Database:
                 quest_id INTEGER,
                 completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, quest_id)
-                cur.execute("ALTER TABLE user_quests ADD COLUMN IF NOT EXISTS task_id TEXT")
+                ALTER TABLE user_quests ADD COLUMN IF NOT EXISTS task_id TEXT
                 )
 
                 """)
