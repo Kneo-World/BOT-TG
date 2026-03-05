@@ -648,6 +648,12 @@ class AdminQuestCreation(StatesGroup):
     waiting_for_reward = State()
     waiting_for_next = State()
 
+class CreateCheckStates(StatesGroup):
+    waiting_for_type = State()
+    waiting_for_value = State()
+    waiting_for_password = State()
+    waiting_for_max_uses = State()
+
 class QuestStates(StatesGroup):
     waiting_for_forward = State()
 
