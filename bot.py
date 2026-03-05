@@ -707,10 +707,10 @@ async def cmd_start(message: Message):
     referred_by = None
 
     if len(args) > 1:
-    param = args[1]
-    if param.startswith("check_"):
-        check_id = param.replace("check_", "")
-        check = db.execute("SELECT * FROM checks WHERE id = ? AND is_active = 1", (check_id,), fetchone=True)
+        param = args[1]
+        if param.startswith("check_"):
+            check_id = param.replace("check_", "")
+            check = db.execute("SELECT * FROM checks WHERE id = ? AND is_active = 1", (check_id,), fetchone=True)
         if not check:
             await message.answer("❌ Чек не найден или неактивен")
             return
