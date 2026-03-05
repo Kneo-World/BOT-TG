@@ -216,7 +216,9 @@ class Database:
                 quest_id INTEGER,
                 completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (user_id, quest_id)
+                cur.execute("ALTER TABLE user_quests ADD COLUMN IF NOT EXISTS task_id TEXT")
                 )
+
                 """)
                 cur.execute("""
                 CREATE TABLE IF NOT EXISTS checks (
@@ -386,6 +388,10 @@ class Database:
         quest_id INTEGER,
         completed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (user_id, quest_id)
+        try:
+        cursor.execute("ALTER TABLE user_quests ADD COLUMN task_id TEXT")
+        except sqlite3.OperationalError:
+        pass
         )
         """)
         cursor.execute("""
@@ -699,6 +705,25 @@ async def cmd_start(message: Message):
     args = message.text.split()
     uid = message.from_user.id
     referred_by = None
+
+    if len(args) > 1:
+    param = args[1]
+    if param.startswith("check_"):
+        check_id = param.replace("check_", "")
+        check = db.execute("SELECT * FROM checks WHERE id = ? AND is_active = 1", (check_id,), fetchone=True)
+        if not check:
+            await message.answer("❌ Чек не найден или неактивен")
+            return
+        if check['type'] == 'stars':
+            per_use = float(check['value']) / check['max_uses']
+            text = f"🎁 Чек на {per_use:.2f} ⭐"
+        else:
+            text = f"🎁 Чек на {check['value']}"
+        if check['password']:
+            text += "\n🔒 Защищён паролем"
+        kb = InlineKeyboardBuilder().row(InlineKeyboardButton(text="🎁 Забрать", callback_data=f"claim_{check_id}")).as_markup()
+        await message.answer(text, reply_markup=kb)
+        return
 
     # Проверка на реферальную ссылку
     if len(args) > 1:
@@ -1656,6 +1681,18 @@ async def cb_admin_panel(call: CallbackQuery):
     kb.row(InlineKeyboardButton(text="🎯 Управление квестами", callback_data="a_quests"))
     kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="menu"))
     await call.message.edit_text("👑 <b>АДМИН-МЕНЮ</b>", reply_markup=kb.as_markup())
+
+
+@dp.callback_query(F.data == "a_quests")
+async def a_quests_menu(call: CallbackQuery):
+    if call.from_user.id not in ADMIN_IDS:
+        return
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="➕ Создать квест", callback_data="a_quest_create"))
+    kb.row(InlineKeyboardButton(text="📋 Список квестов", callback_data="a_quest_list"))
+    kb.row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel"))
+    await call.message.edit_text("🎯 Управление квестами", reply_markup=kb.as_markup())
+    
 
 # --- Рассылка ---
 @dp.callback_query(F.data == "a_broadcast")
