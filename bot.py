@@ -640,7 +640,7 @@ class AdminStates(StatesGroup):
     waiting_special_item_key = State()
     waiting_special_field = State()
 
-class AdminQuestStates(StatesGroup):
+class AdminQuestCreation(StatesGroup):
     waiting_for_name = State()
     waiting_for_description = State()
     waiting_for_type = State()
@@ -2250,22 +2250,22 @@ async def set_special_item(message: Message, state: FSMContext):
     await state.clear()
     await adm_config_menu(await message.answer("⚙️ Настройки", reply_markup=InlineKeyboardBuilder().row(InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")).as_markup()))
 
-#========== СОЗДАТЬ КВЕСТЫ ===========
+# ========== АДМИНКА: СОЗДАНИЕ КВЕСТА ==========
 
 @dp.callback_query(F.data == "a_quest_create")
 async def a_quest_create_start(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
         return
     await call.message.answer("Введи название квеста:")
-    await state.set_state(CreateQuestAdmin.waiting_for_name)
+    await state.set_state(AdminQuestCreation.waiting_for_name)
 
-@dp.message(AdminQuestStates.waiting_for_name)
+@dp.message(AdminQuestCreation.waiting_for_name)
 async def a_quest_create_name(message: Message, state: FSMContext):
     await state.update_data(name=message.text)
     await message.answer("Введи описание квеста:")
-    await state.set_state(CreateQuestAdmin.waiting_for_description)
+    await state.set_state(AdminQuestCreation.waiting_for_description)
 
-@dp.message(AdminQuestStates.waiting_for_description)
+@dp.message(AdminQuestCreation.waiting_for_description)
 async def a_quest_create_desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
     kb = InlineKeyboardBuilder()
@@ -2273,30 +2273,30 @@ async def a_quest_create_desc(message: Message, state: FSMContext):
     kb.row(InlineKeyboardButton(text="🤖 Пересылка из бота", callback_data="quest_type_forward"))
     kb.row(InlineKeyboardButton(text="📰 Просмотр поста", callback_data="quest_type_view"))
     await message.answer("Выбери тип квеста:", reply_markup=kb.as_markup())
-    await state.set_state(CreateQuestAdmin.waiting_for_type)
+    await state.set_state(AdminQuestCreation.waiting_for_type)
 
-@dp.callback_query(CreateQuestAdmin.waiting_for_type, F.data.startswith("quest_type_"))
+@dp.callback_query(AdminQuestCreation.waiting_for_type, F.data.startswith("quest_type_"))
 async def a_quest_create_type(call: CallbackQuery, state: FSMContext):
     qtype = call.data.split("_")[2]  # sub, forward, view
     await state.update_data(type=qtype)
     if qtype == 'sub':
         await call.message.answer("Введи ID канала (например: -100123456789):")
+        await state.set_state(AdminQuestCreation.waiting_for_target)
     elif qtype == 'forward':
         await call.message.answer("Введи ID бота или канала, откуда нужно переслать сообщение:")
+        await state.set_state(AdminQuestCreation.waiting_for_target)
     else:  # view
         await state.update_data(target='')
         await call.message.answer("Введи награду (количество звёзд):")
-        await state.set_state(CreateQuestAdmin.waiting_for_reward)
-        return
-    await state.set_state(CreateQuestAdmin.waiting_for_target)
+        await state.set_state(AdminQuestCreation.waiting_for_reward)
 
-@dp.message(CreateQuestAdmin.waiting_for_target)
+@dp.message(AdminQuestCreation.waiting_for_target)
 async def a_quest_create_target(message: Message, state: FSMContext):
     await state.update_data(target=message.text)
     await message.answer("Введи награду (количество звёзд):")
-    await state.set_state(CreateQuestAdmin.waiting_for_reward)
+    await state.set_state(AdminQuestCreation.waiting_for_reward)
 
-@dp.message(CreateQuestAdmin.waiting_for_reward)
+@dp.message(AdminQuestCreation.waiting_for_reward)
 async def a_quest_create_reward(message: Message, state: FSMContext):
     try:
         reward = float(message.text)
@@ -2305,9 +2305,9 @@ async def a_quest_create_reward(message: Message, state: FSMContext):
         return
     await state.update_data(reward=reward)
     await message.answer("Введи ID следующего квеста (если нет, отправь 0):")
-    await state.set_state(CreateQuestAdmin.waiting_for_next)
+    await state.set_state(AdminQuestCreation.waiting_for_next)
 
-@dp.message(CreateQuestAdmin.waiting_for_next)
+@dp.message(AdminQuestCreation.waiting_for_next)
 async def a_quest_create_next(message: Message, state: FSMContext):
     try:
         next_id = int(message.text)
@@ -2322,75 +2322,6 @@ async def a_quest_create_next(message: Message, state: FSMContext):
         (data['name'], data['description'], data['type'], data.get('target', ''), data['reward'], next_id)
     )
     await message.answer("✅ Квест создан!")
-    await state.clear()
-
-@dp.message(CreateQuestStates.waiting_for_name)
-async def a_quest_create_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text)
-    await message.answer("Введи описание квеста:")
-    await state.set_state(CreateQuestStates.waiting_for_description)
-
-@dp.message(CreateQuestStates.waiting_for_description)
-async def a_quest_create_desc(message: Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="⭐ Звёзды", callback_data="reward_stars"))
-    kb.row(InlineKeyboardButton(text="🎁 Подарок", callback_data="reward_item"))
-    await message.answer("Выбери тип награды:", reply_markup=kb.as_markup())
-    await state.set_state(CreateQuestStates.waiting_for_reward_type)
-
-@dp.callback_query(CreateQuestStates.waiting_for_reward_type, F.data.startswith("reward_"))
-async def a_quest_create_reward_type(call: CallbackQuery, state: FSMContext):
-    rtype = call.data.split("_")[1]  # stars или item
-    await state.update_data(reward_type=rtype)
-    if rtype == 'stars':
-        await call.message.answer("Введи количество звёзд:")
-    else:
-        await call.message.answer("Введи название предмета:")
-    await state.set_state(CreateQuestStates.waiting_for_reward_value)
-
-@dp.message(CreateQuestStates.waiting_for_reward_value)
-async def a_quest_create_reward_value(message: Message, state: FSMContext):
-    await state.update_data(reward_value=message.text)
-    kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="📺 Подписка на канал", callback_data="cond_channel"))
-    kb.row(InlineKeyboardButton(text="🤖 Запуск бота", callback_data="cond_botstart"))
-    kb.row(InlineKeyboardButton(text="📰 Просмотр постов", callback_data="cond_posts"))
-    kb.row(InlineKeyboardButton(text="🔘 Другое", callback_data="cond_other"))
-    await message.answer("Выбери тип условия:", reply_markup=kb.as_markup())
-    await state.set_state(CreateQuestStates.waiting_for_condition_type)
-
-@dp.callback_query(CreateQuestStates.waiting_for_condition_type, F.data.startswith("cond_"))
-async def a_quest_create_cond_type(call: CallbackQuery, state: FSMContext):
-    cond_type = call.data.split("_")[1]
-    await state.update_data(condition_type=cond_type)
-    if cond_type == 'channel':
-        await call.message.answer("Введи ID канала (например: -100123456789):")
-    elif cond_type == 'botstart':
-        # Не требует значения
-        await state.update_data(condition_value='')
-        await finish_quest_creation(call, state)
-        return
-    elif cond_type == 'posts':
-        await state.update_data(condition_value='')
-        await finish_quest_creation(call, state)
-        return
-    else:
-        await call.message.answer("Введи условие (текст):")
-    await state.set_state(CreateQuestStates.waiting_for_condition_value)
-
-@dp.message(CreateQuestStates.waiting_for_condition_value)
-async def a_quest_create_cond_value(message: Message, state: FSMContext):
-    await state.update_data(condition_value=message.text)
-    await finish_quest_creation(message, state)
-
-async def finish_quest_creation(event, state: FSMContext):
-    data = await state.get_data()
-    db.execute(
-        "INSERT INTO quests (name, description, reward_type, reward_value, condition_type, condition_value) VALUES (?, ?, ?, ?, ?, ?)",
-        (data['name'], data['description'], data['reward_type'], data['reward_value'], data['condition_type'], data['condition_value'])
-    )
-    await event.answer("✅ Квест создан!")
     await state.clear()
 
 # ========== ОБРАБОТКА АДМИН-РЕШЕНИЙ ПО ЗАЯВКАМ ==========
