@@ -2252,14 +2252,6 @@ async def set_special_item(message: Message, state: FSMContext):
 
 #========== СОЗДАТЬ КВЕСТЫ ===========
 
-class CreateQuestAdmin(StatesGroup):
-    waiting_for_name = State()
-    waiting_for_description = State()
-    waiting_for_type = State()
-    waiting_for_target = State()
-    waiting_for_reward = State()
-    waiting_for_next = State()
-
 @dp.callback_query(F.data == "a_quest_create")
 async def a_quest_create_start(call: CallbackQuery, state: FSMContext):
     if call.from_user.id not in ADMIN_IDS:
@@ -2267,13 +2259,13 @@ async def a_quest_create_start(call: CallbackQuery, state: FSMContext):
     await call.message.answer("Введи название квеста:")
     await state.set_state(CreateQuestAdmin.waiting_for_name)
 
-@dp.message(CreateQuestAdmin.waiting_for_name)
+@dp.message(AdminQuestStates.waiting_for_name)
 async def a_quest_create_name(message: Message, state: FSMContext):
     await state.update_data(name=message.text)
     await message.answer("Введи описание квеста:")
     await state.set_state(CreateQuestAdmin.waiting_for_description)
 
-@dp.message(CreateQuestAdmin.waiting_for_description)
+@dp.message(AdminQuestStates.waiting_for_description)
 async def a_quest_create_desc(message: Message, state: FSMContext):
     await state.update_data(description=message.text)
     kb = InlineKeyboardBuilder()
